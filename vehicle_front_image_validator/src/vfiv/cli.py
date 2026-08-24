@@ -3,6 +3,7 @@ import json
 import os
 import sys
 
+from vfiv import config
 from vfiv.validators.combined import validate_upload
 from vfiv.validators.duplicate_check import check_duplicate
 from vfiv.validators.fastag_check import check_fastag_upload
@@ -31,6 +32,12 @@ def main() -> None:
                                           "only enforced if read with high confidence).")
     ap.add_argument("--upload-id", help="Stable id for this upload (--type duplicate|side); "
                                          "defaults to the image's filename if omitted.")
+    ap.add_argument("--image-type", choices=config.IMAGE_TYPES, default="front",
+                     help="Which reference corpus to search/store against (--type duplicate only); "
+                          "front/side/fastag are never compared against each other.")
+    ap.add_argument("--no-store", action="store_true",
+                     help="--type duplicate only: search/decide without storing this upload's "
+                          "embedding (a pure lookup, doesn't grow the reference library).")
     ap.add_argument("--fastag-id", help="Claimed FASTag id (required for --type fastag).")
     ap.add_argument("--bank-code", help="Claimed issuing-bank code from the QR payload "
                                          "(optional for --type fastag).")
@@ -59,7 +66,8 @@ def main() -> None:
         if not args.vrn:
             ap.error("--vrn is required for --type duplicate")
         upload_id = args.upload_id or os.path.basename(args.image)
-        result = check_duplicate(args.image, upload_id, args.vrn)
+        result = check_duplicate(args.image, upload_id, args.vrn, image_type=args.image_type,
+                                  store=not args.no_store)
     elif args.type == "fastag":
         if not args.fastag_id:
             ap.error("--fastag-id is required for --type fastag")

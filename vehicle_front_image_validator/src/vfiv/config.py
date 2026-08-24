@@ -95,6 +95,12 @@ PGVECTOR_EMBED_DIM = int(os.environ.get("VFIV_PGVECTOR_EMBED_DIM", "768"))
 # detection" section for why the raw number isn't meaningful on its own.
 DUPLICATE_SIMILARITY_MIN = float(os.environ.get("VFIV_DUPLICATE_SIMILARITY_MIN", "0.97"))
 
+# The image types the reference-image library distinguishes — front/side/fastag are
+# unrelated corpora and are never compared against each other (see image_type in
+# backends/vector_store.py). A convenience list for UI dropdowns/CLI choices, not
+# an enforced constraint — any string is technically accepted as an image_type.
+IMAGE_TYPES = ["front", "side", "fastag"]
+
 # --- FASTag validator (validators/fastag_check.py) ----------------------------
 # Printed-digit OCR fuzz budget -- same idea as VRN_MAX_CONFUSABLE_EDITS, but only
 # ever the last-resort match arm: the QR/barcode decodes are exact and checked first.

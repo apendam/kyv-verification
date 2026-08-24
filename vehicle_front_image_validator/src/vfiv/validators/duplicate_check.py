@@ -83,18 +83,22 @@ def check_duplicate(
     image,
     upload_id: str,
     claimed_vrn: str,
+    image_type: str = "front",
     top_k: int = 5,
     similarity_min: float = config.DUPLICATE_SIMILARITY_MIN,
     store: bool = True,
 ) -> DuplicateCheckResult:
-    """Embed ``image``, search prior uploads for near-duplicates, decide, then (by
-    default) store this upload's own embedding so future uploads can be checked
-    against it too. ``upload_id`` is a stable identifier for this upload (e.g. its
-    DB row id) — used only for the audit trail, never interpreted here.
+    """Embed ``image``, search prior uploads of the SAME ``image_type`` for near-
+    duplicates, decide, then (by default) store this upload's own embedding so
+    future uploads can be checked against it too. ``upload_id`` is a stable
+    identifier for this upload (e.g. its DB row id) — used only for the audit
+    trail, never interpreted here. ``image_type`` (e.g. "front" | "side" |
+    "fastag") scopes the search to visually-comparable uploads only — see
+    ``backends/vector_store.py``.
     """
     try:
         embedding = get_siglip_model().embed_image(image)
-        matches = find_similar(embedding, top_k=top_k)
+        matches = find_similar(embedding, image_type=image_type, top_k=top_k)
     except DuplicateStoreError as e:
         return DuplicateCheckResult(
             decision="MANUAL_REVIEW",
@@ -107,5 +111,5 @@ def check_duplicate(
 
     result = decide_duplicate(matches, claimed_vrn, similarity_min)
     if store:
-        store_embedding(upload_id, claimed_vrn, embedding)
+        store_embedding(upload_id, claimed_vrn, image_type, embedding)
     return result

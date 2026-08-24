@@ -304,26 +304,53 @@ only ever look at *one* upload in isolation; this looks *across* all past upload
   weights already loaded for Q1/Q3, just stopped one step earlier (the raw image
   embedding, before it's compared against any text prompt). No second model.
 - **Storage/search**: Postgres + [pgvector](https://github.com/pgvector/pgvector)
-  (`backends/vector_store.py`) — each upload's embedding + its claimed VRN is stored;
-  a new upload is compared against everything on file via exact cosine nearest-neighbor
-  search (an HNSW index keeps this fast at scale). Needs `VFIV_PGVECTOR_DSN` set to a
-  reachable Postgres instance with the `pgvector` extension available; degrades to a
-  clear `checked=False` error (never a crash) when it isn't configured.
+  (`backends/vector_store.py`) — each upload's embedding + its claimed VRN + an
+  `image_type` is stored; a new upload is compared only against prior uploads of the
+  **same** `image_type` via exact cosine nearest-neighbor search (an HNSW index keeps
+  this fast at scale). Needs `VFIV_PGVECTOR_DSN` set to a reachable Postgres instance
+  with the `pgvector` extension available; degrades to a clear `checked=False` error
+  (never a crash) when it isn't configured. The table/index are created automatically
+  on first use — no manual migration step.
+- **`image_type`** (`config.IMAGE_TYPES` = `["front", "side", "fastag"]`, any string is
+  technically accepted) — front/side/FASTag photos are visually unrelated, so each is
+  its own corpus; a side photo is never compared against a front photo. `check_duplicate`
+  defaults to `"front"`; `side_image_check.py` passes `"side"` explicitly.
 - **Decision** (`decide_duplicate`): a hit only counts as a fraud lead when the closest
-  match is near-identical (`cosine similarity >= DUPLICATE_SIMILARITY_MIN`, default
-  `0.97`) **and** was filed under a **different** claimed VRN — a near-duplicate under
-  the *same* VRN is just an honest re-upload and is never flagged. A hit always resolves
-  to `MANUAL_REVIEW`, never an auto-`REJECT`: this is a signal for a human, not a verdict.
+  match (within the same `image_type`) is near-identical (`cosine similarity >=
+  DUPLICATE_SIMILARITY_MIN`, default `0.97`) **and** was filed under a **different**
+  claimed VRN — a near-duplicate under the *same* VRN is just an honest re-upload and is
+  never flagged. A hit always resolves to `MANUAL_REVIEW`, never an auto-`REJECT`: this
+  is a signal for a human, not a verdict.
 
 ```bash
-python -m vfiv.cli --image samples/truck2.jpg --type duplicate --vrn UP42T4069 --upload-id my_upload_1
+python -m vfiv.cli --image samples/truck2.jpg --type duplicate --vrn UP42T4069 \
+    --upload-id my_upload_1 --image-type front
 ```
 
 ```python
 from vfiv import check_duplicate
-result = check_duplicate(image, upload_id="upload_123", claimed_vrn="UP42T4069")
+result = check_duplicate(image, upload_id="upload_123", claimed_vrn="UP42T4069", image_type="front")
 result.is_duplicate_suspect, result.best_match_id, result.best_match_similarity, result.best_match_vrn
 ```
+
+**Seeding the reference library** — the webapp's **Reference Images** tab
+(`python -m vfiv.webapp`) lets you upload known-good truck images by type (front/side/
+fastag), store their embeddings, and check new images against what's stored — without
+running Q1/Q2/Q3 at all. A "Refresh library stats" button shows how many images are
+stored per type. Bulk CSV seeding is also supported (`image_url, truck_number,
+upload_id` columns).
+
+**Running pgvector locally** (e.g. on your own machine, via Homebrew on macOS):
+
+```bash
+brew install postgresql@16 pgvector
+brew services start postgresql@16
+createdb vfiv
+export VFIV_PGVECTOR_DSN="postgresql://$(whoami)@localhost:5432/vfiv"
+```
+
+No further setup needed — `store_embedding`/`find_similar` call `ensure_schema()`
+automatically on first use, creating the `vector` extension, table, and indexes.
 
 **Not wired into `combined.py`/`validate_upload`** — call it alongside the combined
 check (or from a batch job over recent uploads) rather than folding it into

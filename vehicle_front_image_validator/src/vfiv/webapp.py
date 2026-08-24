@@ -21,8 +21,10 @@ from PIL import Image
 
 from vfiv import config
 from vfiv.backends.fastag_reader import FASTAG_OCR_BACKENDS
+from vfiv.backends.vector_store import DuplicateStoreError, count_by_type
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.runner import run_q1_only, run_q2_only, run_q3_only, run_test_case
+from vfiv.validators.duplicate_check import check_duplicate
 from vfiv.validators.fastag_check import check_fastag_upload
 from vfiv.validators.side_image_check import AXLE_COUNT_BACKENDS, check_side_image_upload
 
@@ -417,6 +419,46 @@ def run_side_bulk(csv_path, axle_backend, gemini_model, progress=gr.Progress()):
     )
 
 
+# --- Reference-image library (duplicate-detection corpus) -------------------------
+
+def run_duplicate_check(image, upload_id, truck_number, image_type, top_k, similarity_min, store):
+    if image is None:
+        return "### Upload an image first.", {}
+    if not truck_number:
+        return "### Truck number is required.", {}
+    upload_id = upload_id or f"webapp-{truck_number}-{image_type}"
+    result = check_duplicate(image, upload_id, truck_number, image_type=image_type,
+                             top_k=int(top_k), similarity_min=float(similarity_min), store=bool(store))
+    return _banner(result.decision, result.reason), result.model_dump()
+
+
+def run_duplicate_bulk(csv_path, image_type, top_k, similarity_min, store, progress=gr.Progress()):
+    def row_fn(image, row):
+        upload_id = _clean_optional(row.get("upload_id")) or f"webapp-{row['truck_number']}-{image_type}"
+        r = check_duplicate(image, upload_id, str(row["truck_number"]), image_type=image_type,
+                            top_k=int(top_k), similarity_min=float(similarity_min), store=bool(store))
+        return {"truck_number": row["truck_number"], "decision": r.decision, "reason": r.reason,
+               "is_duplicate_suspect": r.is_duplicate_suspect, "best_match_id": r.best_match_id,
+               "best_match_similarity": r.best_match_similarity, "best_match_vrn": r.best_match_vrn}
+
+    return _run_bulk_generic(
+        csv_path, row_fn,
+        ["is_duplicate_suspect", "best_match_id", "best_match_similarity", "best_match_vrn"],
+        {"image_url", "truck_number"}, "image_url, truck_number, upload_id (optional)", progress,
+    )
+
+
+def refresh_library_stats():
+    try:
+        counts = count_by_type()
+    except DuplicateStoreError as e:
+        return f"### Reference library unavailable\n\n{e}"
+    if not counts:
+        return "### Reference library is empty (no images stored yet for any type)."
+    lines = "\n".join(f"- **{t}**: {n} image(s)" for t, n in sorted(counts.items()))
+    return f"### Reference library contents\n\n{lines}"
+
+
 # --- UI --------------------------------------------------------------------------
 
 def _gemini_model_row(*, q1=False, q2=False, q3_make=False, q3_model=False):
@@ -661,6 +703,58 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
                     side_download_out = gr.File(label="Download results CSV")
                     side_bulk_btn.click(run_side_bulk, inputs=[side_csv_in, axle_dd, axle_gm_dd],
                                        outputs=[side_table_out, side_download_out])
+
+        # --- Reference-image library --------------------------------------------
+        with gr.Tab("Reference Images"):
+            gr.Markdown(
+                "Seed the duplicate-detection corpus (`validators/duplicate_check.py`) with known-good "
+                "truck images, or check a new image against what's already stored — **without** running "
+                "Q1/Q2/Q3. `front` / `side` / `fastag` are separate corpora and never compared against "
+                "each other. Needs `VFIV_PGVECTOR_DSN` set to a reachable Postgres+pgvector instance."
+            )
+            dup_image_type_dd = gr.Dropdown(config.IMAGE_TYPES, value="front", label="Image type")
+            dup_stats_out = gr.Markdown()
+            dup_refresh_btn = gr.Button("Refresh library stats")
+            dup_refresh_btn.click(refresh_library_stats, inputs=[], outputs=[dup_stats_out])
+
+            with gr.Tabs():
+                with gr.Tab("Individual"):
+                    with gr.Row():
+                        with gr.Column():
+                            dup_image_in = gr.Image(type="pil", label="Upload image")
+                            dup_vrn_in = gr.Textbox(label="Truck number (VRN)")
+                            dup_upload_id_in = gr.Textbox(
+                                label="Upload id (optional — auto-generated from VRN + image type if blank)")
+                            with gr.Row():
+                                dup_topk_in = gr.Number(label="Top-K neighbors to check", value=5, precision=0)
+                                dup_simmin_in = gr.Number(label="Similarity threshold",
+                                                          value=config.DUPLICATE_SIMILARITY_MIN)
+                            dup_store_in = gr.Checkbox(
+                                value=True, label="Store this image in the reference library "
+                                                  "(uncheck for a pure lookup that doesn't grow the corpus)")
+                            dup_run_btn = gr.Button("Check / Store", variant="primary")
+                        with gr.Column():
+                            dup_decision_out = gr.Markdown()
+                            dup_json_out = gr.JSON(label="Full result")
+                    dup_run_btn.click(
+                        run_duplicate_check,
+                        inputs=[dup_image_in, dup_upload_id_in, dup_vrn_in, dup_image_type_dd,
+                               dup_topk_in, dup_simmin_in, dup_store_in],
+                        outputs=[dup_decision_out, dup_json_out],
+                    )
+
+                with gr.Tab("Bulk (CSV)"):
+                    gr.Markdown("CSV columns: `image_url`, `truck_number`, `upload_id` (optional). "
+                               "One row per reference image — uses the image type and settings above.")
+                    dup_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                    dup_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                    dup_table_out = gr.Dataframe(label="Results")
+                    dup_download_out = gr.File(label="Download results CSV")
+                    dup_bulk_btn.click(
+                        run_duplicate_bulk,
+                        inputs=[dup_csv_in, dup_image_type_dd, dup_topk_in, dup_simmin_in, dup_store_in],
+                        outputs=[dup_table_out, dup_download_out],
+                    )
 
 
 if __name__ == "__main__":

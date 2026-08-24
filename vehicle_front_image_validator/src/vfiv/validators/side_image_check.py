@@ -6,9 +6,9 @@ search + a VLM axle count + an OCR/embedding identity check — see combined.py'
 docstring for why this has to live in code, same reasoning applies here):
 
 1. Duplicate check — reuses ``validators/duplicate_check.py``'s ``check_duplicate``
-   unchanged, only if ``upload_id`` is given. KNOWN LIMITATION: shares the same
-   pgvector table as front-image uploads unless you scope it (a separate table, or
-   an ``image_type`` column filter) — untested at real scale for this image type.
+   with ``image_type="side"``, only if ``upload_id`` is given. Scoped to the
+   "side" corpus only (``backends/vector_store.py``'s ``image_type`` column) so
+   it's never compared against front or FASTag embeddings.
 
 2. Axle count — no dedicated CV model wired. Counting axles from a 2D photo is a
    real, non-trivial CV problem in its own right (would need a custom-trained
@@ -221,7 +221,7 @@ def check_side_image_upload(
     try:
         arr = load_rgb_array(image)
 
-        dup = check_duplicate(image, upload_id, claimed_vrn) if upload_id else None
+        dup = check_duplicate(image, upload_id, claimed_vrn, image_type="side") if upload_id else None
 
         axle_raw = classify_axle_count(image, backend=axle_backend, model=axle_model)
         if axle_raw.get("checked"):
