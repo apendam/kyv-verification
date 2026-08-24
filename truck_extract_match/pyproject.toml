@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "truck-extract-match"
+version = "0.0.1"
+description = "Shared detect -> read -> normalise -> match module for VRN (Q2) and Make (Q3)."
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+include = ["truck_extract_match*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

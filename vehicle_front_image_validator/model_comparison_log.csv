@@ -1,0 +1,40 @@
+stage,backend,image,ground_truth,your_result,correct_y_n,notes
+Q1,real_cv,truck1.png,"truck / front / complete",,,known limitation: generic YOLO may miss this truck
+Q1,real_cv,truck2.jpg,"truck / front / complete",,,
+Q1,real_cv,o_UP42T4069.jpg,"truck / front / complete",,,
+Q1,claude,truck1.png,"truck / front / complete",,,
+Q1,claude,truck2.jpg,"truck / front / complete",,,
+Q1,claude,o_UP42T4069.jpg,"truck / front / complete",,,
+Q1,gemini,truck1.png,"truck / front / complete",,,
+Q1,gemini,truck2.jpg,"truck / front / complete",,,
+Q1,gemini,o_UP42T4069.jpg,"truck / front / complete",,,
+Q2,rekognition,truck1.png,BR28GB7804 / yellow,,,
+Q2,rekognition,truck2.jpg,UP42T4069 / yellow,,,
+Q2,rekognition,o_UP42T4069.jpg,UP42T4069 / yellow,,,
+Q2,claude,truck1.png,BR28GB7804 / yellow,,,
+Q2,claude,truck2.jpg,UP42T4069 / yellow,,,
+Q2,claude,o_UP42T4069.jpg,UP42T4069 / yellow,,,
+Q2,gemini,truck1.png,BR28GB7804 / yellow,,,
+Q2,gemini,truck2.jpg,UP42T4069 / yellow,,,
+Q2,gemini,o_UP42T4069.jpg,UP42T4069 / yellow,,,
+Q3-make,siglip_rekognition,truck1.png,ASHOK LEYLAND,,,
+Q3-make,siglip_rekognition,truck2.jpg,TATA,,,known: SigLIP alone misreads this as "Force Motors" -- Rekognition should backstop it
+Q3-make,siglip_rekognition,o_UP42T4069.jpg,TATA,,,
+Q3-make,claude,truck1.png,ASHOK LEYLAND,,,
+Q3-make,claude,truck2.jpg,TATA,,,
+Q3-make,claude,o_UP42T4069.jpg,TATA,,,
+Q3-make,gemini,truck1.png,ASHOK LEYLAND,,,
+Q3-make,gemini,truck2.jpg,TATA,,,
+Q3-make,gemini,o_UP42T4069.jpg,TATA,,,
+Q3-make,gcv_logo,truck1.png,ASHOK LEYLAND,,,requires Cloud Vision API enabled on the GCP project
+Q3-make,gcv_logo,truck2.jpg,TATA,,,requires Cloud Vision API enabled on the GCP project
+Q3-make,gcv_logo,o_UP42T4069.jpg,TATA,,,requires Cloud Vision API enabled on the GCP project
+Q3-make,clarifai,truck1.png,ASHOK LEYLAND,,,requires CLARIFAI_API_KEY (not yet configured)
+Q3-make,clarifai,truck2.jpg,TATA,,,requires CLARIFAI_API_KEY (not yet configured)
+Q3-make,clarifai,o_UP42T4069.jpg,TATA,,,requires CLARIFAI_API_KEY (not yet configured)
+Q3-model,claude,truck1.png,TBD - verify visually,,,no confirmed ground truth yet
+Q3-model,claude,truck2.jpg,TBD - verify visually,,,earlier low-confidence read: "5530" (unconfirmed)
+Q3-model,claude,o_UP42T4069.jpg,TBD - verify visually,,,
+Q3-model,gemini,truck1.png,TBD - verify visually,,,no confirmed ground truth yet
+Q3-model,gemini,truck2.jpg,TBD - verify visually,,,earlier low-confidence read: "5530" (unconfirmed)
+Q3-model,gemini,o_UP42T4069.jpg,TBD - verify visually,,,
