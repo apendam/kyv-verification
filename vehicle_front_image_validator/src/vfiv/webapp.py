@@ -20,8 +20,11 @@ import requests
 from PIL import Image
 
 from vfiv import config
+from vfiv.backends.fastag_reader import FASTAG_OCR_BACKENDS
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.runner import run_q1_only, run_q2_only, run_q3_only, run_test_case
+from vfiv.validators.fastag_check import check_fastag_upload
+from vfiv.validators.side_image_check import AXLE_COUNT_BACKENDS, check_side_image_upload
 
 Q1_CHOICES = q1_select.Q1_BACKENDS
 Q2_CHOICES = q2_select.Q2_BACKENDS
@@ -32,12 +35,155 @@ Q3_MODEL_CHOICES = q3_select.Q3_MODEL_BACKENDS
 # future model id), so this list is a convenience, not an exhaustive whitelist.
 GEMINI_MODEL_CHOICES = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
 
-_DECISION_COLOUR = {"PASS": "🟢", "REJECT": "🔴", "MANUAL_REVIEW": "🟠"}
+# Brand tokens pulled from blackbuck.com's own compiled Webflow CSS (its :root custom
+# properties and most-used hex values) — dark-first UI, a signature turquoise accent,
+# a bold display face for headings over a clean geometric sans for everything else.
+# The exact brand fonts (Drukwide / Generalsans) are commercial and not embedded here;
+# Archivo Black / Inter are free stand-ins with a similar weight and character.
+_BB_TURQUOISE = "#0dcbc2"
+_BB_CRIMSON = "#d71e48"
+_BB_YELLOW = "#ffc130"
+
+_DECISION_STYLE = {
+    "PASS": (_BB_TURQUOISE, "#000"),
+    "REJECT": (_BB_CRIMSON, "#fff"),
+    "MANUAL_REVIEW": (_BB_YELLOW, "#000"),
+}
+
+CUSTOM_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+    --bb-black: #0a0a0a;
+    --bb-panel: #151515;
+    --bb-panel-2: #1e1e1e;
+    --bb-white: #ffffff;
+    --bb-muted: #a8a8a8;
+    --bb-turquoise: #0dcbc2;
+    --bb-turquoise-dark: #0b8e88;
+    --bb-border: #2a2a2a;
+}
+
+.gradio-container {
+    background: var(--bb-black) !important;
+    color: var(--bb-white) !important;
+    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif !important;
+}
+
+.gradio-container h1, .gradio-container h2, .gradio-container h3 {
+    font-family: 'Archivo Black', 'Inter', sans-serif !important;
+    letter-spacing: -0.01em;
+    color: var(--bb-white) !important;
+}
+
+.gradio-container .prose, .gradio-container p, .gradio-container span, .gradio-container label {
+    color: var(--bb-white) !important;
+}
+
+/* Gradio's markdown typography gives <strong>/<code> their own explicit (dark) colour
+   that plain inheritance from .prose doesn't override -- target them directly. */
+.gradio-container .prose strong {
+    color: var(--bb-white) !important;
+}
+.gradio-container .prose code {
+    color: var(--bb-turquoise) !important;
+    background: var(--bb-panel-2) !important;
+}
+
+.gradio-container .block, .gradio-container .form {
+    background: var(--bb-panel) !important;
+    border: 1px solid var(--bb-border) !important;
+    border-radius: 14px !important;
+}
+
+/* The small label caption Gradio renders above a component (e.g. "Upload image",
+   "Full result") ships with its own light background, under either a ".float" class
+   (image/file-type inputs) or a "block-label" test-id (JSON/dataframe/etc. outputs) --
+   without this override both render as an unreadable white-on-white bar once the text
+   colour above is forced to white. */
+.gradio-container label.float, .gradio-container .float,
+.gradio-container [data-testid="block-label"] {
+    background: var(--bb-panel-2) !important;
+    color: var(--bb-white) !important;
+}
+
+/* Tab bars -- targeted by the ARIA role (stable across Gradio versions) rather than
+   Gradio's internal class names, which changed between major versions. */
+.gradio-container button[role="tab"] {
+    color: var(--bb-muted) !important;
+    font-weight: 600 !important;
+}
+.gradio-container button[role="tab"].selected {
+    color: var(--bb-turquoise) !important;
+    border-bottom: 2px solid var(--bb-turquoise) !important;
+}
+
+.gradio-container input, .gradio-container textarea, .gradio-container select {
+    background: var(--bb-panel-2) !important;
+    color: var(--bb-white) !important;
+    border: 1px solid var(--bb-border) !important;
+    border-radius: 10px !important;
+}
+
+/* Dropdown popover -- Gradio builds this as a plain <ul class="options"><li
+   class="item"> list, not a native <select>, so the input/textarea/select rule
+   above never reaches it; it renders with the browser's default light background
+   otherwise. */
+.gradio-container ul.options {
+    background: var(--bb-panel-2) !important;
+    border: 1px solid var(--bb-border) !important;
+}
+.gradio-container ul.options li.item {
+    color: var(--bb-white) !important;
+    background: var(--bb-panel-2) !important;
+}
+/* The currently-selected option ships a literal Tailwind bg-gray-100 utility class
+   (a hardcoded light colour, not theme-driven) that otherwise wins over the rule
+   above -- override it explicitly rather than relying on cascade order. */
+.gradio-container ul.options li.item.selected,
+.gradio-container ul.options li.item.active {
+    background: var(--bb-panel-2) !important;
+    color: var(--bb-white) !important;
+}
+.gradio-container ul.options li.item:hover {
+    background: var(--bb-turquoise) !important;
+    color: #000 !important;
+}
+
+.gradio-container button.primary {
+    background: var(--bb-turquoise) !important;
+    color: #000 !important;
+    border: none !important;
+    border-radius: 999px !important;
+    font-weight: 700 !important;
+}
+.gradio-container button.primary:hover {
+    background: var(--bb-turquoise-dark) !important;
+    color: #fff !important;
+}
+
+/* Results Dataframe -- renders its own <table> with a light default background,
+   independent of the .block/.form panel styling above. */
+.gradio-container table, .gradio-container th, .gradio-container td {
+    background: var(--bb-panel) !important;
+    color: var(--bb-white) !important;
+    border-color: var(--bb-border) !important;
+}
+
+.gradio-container button.secondary {
+    background: transparent !important;
+    color: var(--bb-white) !important;
+    border: 1px solid var(--bb-border) !important;
+    border-radius: 999px !important;
+}
+"""
 
 
 def _banner(decision: str, reason: str) -> str:
-    emoji = _DECISION_COLOUR.get(decision, "")
-    return f"## {emoji} {decision}\n\n{reason}"
+    bg, fg = _DECISION_STYLE.get(decision, ("#333", "#fff"))
+    badge = (f'<span style="background:{bg};color:{fg};padding:0.35em 0.9em;'
+             f'border-radius:999px;font-weight:700;letter-spacing:0.02em;">{decision}</span>')
+    return f"### {badge}\n\n{reason}"
 
 
 def _fetch_image(url: str) -> Image.Image:
@@ -207,6 +353,70 @@ def run_e2e_bulk(csv_path, q1_backend, q2_backend, q3_make_backend, q3_model_bac
                              "image_url, truck_number, make, model (optional)", progress)
 
 
+# --- FASTag only ------------------------------------------------------------------
+
+def run_fastag_individual(image, fastag_id, bank_code, backend, gemini_model):
+    if image is None:
+        return "### Upload an image first.", {}
+    if not fastag_id:
+        return "### FASTag id is required.", {}
+    result = check_fastag_upload(image, fastag_id, bank_code or None, backend=backend,
+                                 vlm_model=gemini_model if backend == "gemini" else None)
+    return _banner(result.decision, result.reason), result.model_dump()
+
+
+def run_fastag_bulk(csv_path, backend, gemini_model, progress=gr.Progress()):
+    def row_fn(image, row):
+        r = check_fastag_upload(image, str(row["fastag_id"]), _clean_optional(row.get("bank_code")),
+                                backend=backend, vlm_model=gemini_model if backend == "gemini" else None)
+        return {"fastag_id": row["fastag_id"], "decision": r.decision, "reason": r.reason,
+               "matched_via": r.matched_via, "decoded_sources": r.decoded_sources,
+               "extracted_printed_id": r.extracted_printed_id}
+
+    return _run_bulk_generic(csv_path, row_fn,
+                             ["matched_via", "decoded_sources", "extracted_printed_id"],
+                             {"image_url", "fastag_id"}, "image_url, fastag_id, bank_code (optional)", progress)
+
+
+# --- Side/axle image only ----------------------------------------------------------
+
+def run_side_individual(image, truck_number, make, axle_count, upload_id, front_reference,
+                        axle_backend, gemini_model):
+    if image is None:
+        return "### Upload an image first.", {}
+    if not truck_number or not make or axle_count is None:
+        return "### Truck number, make, and axle count are all required.", {}
+    result = check_side_image_upload(
+        image, truck_number, make, int(axle_count),
+        upload_id=upload_id or None, front_reference_image=front_reference,
+        axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
+    )
+    return _banner(result.decision, result.reason), result.model_dump()
+
+
+def run_side_bulk(csv_path, axle_backend, gemini_model, progress=gr.Progress()):
+    def row_fn(image, row):
+        front_ref = None
+        front_ref_url = _clean_optional(row.get("front_reference_url"))
+        if front_ref_url:
+            front_ref = _fetch_image(front_ref_url)
+        r = check_side_image_upload(
+            image, str(row["truck_number"]), str(row["make"]), int(row["axle_count"]),
+            upload_id=_clean_optional(row.get("upload_id")), front_reference_image=front_ref,
+            axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
+        )
+        return {"truck_number": row["truck_number"], "make": row["make"], "decision": r.decision,
+               "reason": r.reason, "axle_count": r.axle_count, "axle_status": r.axle_status,
+               "identity_bucket": r.identity_bucket, "identity_decision": r.identity_decision}
+
+    return _run_bulk_generic(
+        csv_path, row_fn, ["axle_count", "axle_status", "identity_bucket", "identity_decision"],
+        {"image_url", "truck_number", "make", "axle_count"},
+        "image_url, truck_number, make, axle_count, front_reference_url (optional), upload_id (optional)",
+        progress,
+    )
+
+
 # --- UI --------------------------------------------------------------------------
 
 def _gemini_model_row(*, q1=False, q2=False, q3_make=False, q3_model=False):
@@ -374,6 +584,84 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
                         outputs=[e2e_table_out, e2e_download_out],
                     )
 
+        # --- FASTag ---------------------------------------------------------------
+        with gr.Tab("FASTag"):
+            fastag_dd = gr.Dropdown(FASTAG_OCR_BACKENDS, value=config.FASTAG_OCR_BACKEND,
+                                    label="Printed-digit OCR backend")
+            with gr.Accordion("Gemini model (only used if the backend above is \"gemini\")", open=False):
+                fastag_gm_dd = gr.Dropdown(GEMINI_MODEL_CHOICES, value=config.GEMINI_MODEL,
+                                           allow_custom_value=True, label="Gemini model")
+
+            with gr.Tabs():
+                with gr.Tab("Individual"):
+                    with gr.Row():
+                        with gr.Column():
+                            fastag_image_in = gr.Image(type="pil", label="Upload FASTag photo")
+                            fastag_id_in = gr.Textbox(label="Claimed FASTag id")
+                            fastag_bank_in = gr.Textbox(label="Claimed bank code (optional)")
+                            fastag_run_btn = gr.Button("Run", variant="primary")
+                        with gr.Column():
+                            fastag_decision_out = gr.Markdown()
+                            fastag_json_out = gr.JSON(label="Full result")
+                    fastag_run_btn.click(
+                        run_fastag_individual,
+                        inputs=[fastag_image_in, fastag_id_in, fastag_bank_in, fastag_dd, fastag_gm_dd],
+                        outputs=[fastag_decision_out, fastag_json_out],
+                    )
+
+                with gr.Tab("Bulk (CSV)"):
+                    gr.Markdown("CSV columns: `image_url`, `fastag_id`, `bank_code` (optional). "
+                               "One row per test case.")
+                    fastag_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                    fastag_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                    fastag_table_out = gr.Dataframe(label="Results")
+                    fastag_download_out = gr.File(label="Download results CSV")
+                    fastag_bulk_btn.click(run_fastag_bulk, inputs=[fastag_csv_in, fastag_dd, fastag_gm_dd],
+                                         outputs=[fastag_table_out, fastag_download_out])
+
+        # --- Side/axle image --------------------------------------------------------
+        with gr.Tab("Side/axle image"):
+            axle_dd = gr.Dropdown(AXLE_COUNT_BACKENDS, value=config.AXLE_COUNT_BACKEND,
+                                  label="Axle-count model backend")
+            with gr.Accordion("Gemini model (only used if the backend above is \"gemini\")", open=False):
+                axle_gm_dd = gr.Dropdown(GEMINI_MODEL_CHOICES, value=config.GEMINI_MODEL,
+                                         allow_custom_value=True, label="Gemini model")
+
+            with gr.Tabs():
+                with gr.Tab("Individual"):
+                    with gr.Row():
+                        with gr.Column():
+                            side_image_in = gr.Image(type="pil", label="Upload side/axle photo")
+                            side_vrn_in = gr.Textbox(label="Claimed truck number (VRN)")
+                            side_make_in = gr.Textbox(label="Claimed make")
+                            side_axle_in = gr.Number(label="Claimed axle count", precision=0)
+                            side_upload_id_in = gr.Textbox(
+                                label="Upload id (optional — leave blank to skip the duplicate check)")
+                            side_front_ref_in = gr.Image(
+                                type="pil", label="On-file front photo (optional, corner_view bucket only)")
+                            side_run_btn = gr.Button("Run", variant="primary")
+                        with gr.Column():
+                            side_decision_out = gr.Markdown()
+                            side_json_out = gr.JSON(label="Full result")
+                    side_run_btn.click(
+                        run_side_individual,
+                        inputs=[side_image_in, side_vrn_in, side_make_in, side_axle_in, side_upload_id_in,
+                               side_front_ref_in, axle_dd, axle_gm_dd],
+                        outputs=[side_decision_out, side_json_out],
+                    )
+
+                with gr.Tab("Bulk (CSV)"):
+                    gr.Markdown(
+                        "CSV columns: `image_url`, `truck_number`, `make`, `axle_count`, "
+                        "`front_reference_url` (optional), `upload_id` (optional). One row per test case."
+                    )
+                    side_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                    side_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                    side_table_out = gr.Dataframe(label="Results")
+                    side_download_out = gr.File(label="Download results CSV")
+                    side_bulk_btn.click(run_side_bulk, inputs=[side_csv_in, axle_dd, axle_gm_dd],
+                                       outputs=[side_table_out, side_download_out])
+
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(theme=gr.themes.Base(), css=CUSTOM_CSS)
