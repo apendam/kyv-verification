@@ -1,8 +1,10 @@
 import argparse
 import json
+import os
 import sys
 
 from vfiv.validators.combined import validate_upload
+from vfiv.validators.duplicate_check import check_duplicate
 from vfiv.validators.front_image import validate_front_image
 from vfiv.validators.make_model_check import validate_make_model
 from vfiv.validators.vrn_check import validate_vrn
@@ -12,6 +14,7 @@ VALIDATORS = {
     "vrn": validate_vrn,
     "make_model": validate_make_model,
     "combined": validate_upload,
+    "duplicate": check_duplicate,  # not wired into "combined" — see validators/duplicate_check.py
     # "side": validate_side_image,      # planned
     # "fastag": validate_fastag_image,  # planned
 }
@@ -20,10 +23,12 @@ def main() -> None:
     ap.add_argument("--image", required=True, help="Path to the uploaded image.")
     ap.add_argument("--type", choices=sorted(VALIDATORS), default="front", help="Which validator to run.")
     ap.add_argument("--vrn", help="VRN to check against, sent alongside the image "
-                                  "(required for --type vrn|combined; manual input for testing).")
+                                  "(required for --type vrn|combined|duplicate; manual input for testing).")
     ap.add_argument("--make", help="Claimed make/manufacturer (required for --type make_model|combined).")
     ap.add_argument("--model-name", help="Claimed model (optional for --type make_model|combined — "
                                           "only enforced if read with high confidence).")
+    ap.add_argument("--upload-id", help="Stable id for this upload (--type duplicate only); "
+                                         "defaults to the image's filename if omitted.")
     args = ap.parse_args()
 
     if args.type == "vrn":
@@ -38,6 +43,11 @@ def main() -> None:
         if not args.vrn or not args.make:
             ap.error("--vrn and --make are required for --type combined")
         result = validate_upload(args.image, args.vrn, args.make, args.model_name)
+    elif args.type == "duplicate":
+        if not args.vrn:
+            ap.error("--vrn is required for --type duplicate")
+        upload_id = args.upload_id or os.path.basename(args.image)
+        result = check_duplicate(args.image, upload_id, args.vrn)
     else:
         result = VALIDATORS[args.type](args.image)
 

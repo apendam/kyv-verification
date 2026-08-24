@@ -267,12 +267,14 @@ src/vfiv/
     gemini.py                      # Gemini 2.5 wrapper (experimentation only, no key configured)
     google_vision.py                # GCV Logo Detection (experimentation only, no key configured)
     clarifai_backend.py              # Clarifai logo model (experimentation only, no key configured)
+    vector_store.py                  # pgvector nearest-neighbor store (duplicate detection, see below)
   validators/
     base.py                    # shared Claude image+prompt -> JSON plumbing (Q1's judgment calls, Q3's model read)
     front_image.py             # Q1: real CV gate + narrowed Claude prompt -> decide_front_image()
     vrn_check.py                # Q2: Rekognition + HSV -> decide_vrn() (no Claude)
     make_model_check.py          # Q3: SigLIP+Rekognition (make) + Claude (model) -> decide_make_model()
     combined.py                  # single entry point: Q1 gates Q2+Q3, worst-of severity ordering
+    duplicate_check.py            # cross-upload near-duplicate check, NOT wired into combined.py (see below)
   experiments/                  # test/inference interface's backend-selection layer (not production)
     legacy_prompts.py            # reconstructed original all-Claude Q1/Q2/Q3 prompts
     q1_select.py                  # Q1: real_cv | claude | gemini
@@ -287,6 +289,49 @@ src/vfiv/
 `VALIDATION_SPEC.md` — the human-readable spec for what `validate_upload` checks and
 which model performs each piece, meant for the platform's admin UI / documentation, not
 for execution.
+
+## Duplicate detection (fraud lead, not wired into `validate_upload`)
+
+A separate check, `check_duplicate()` (`validators/duplicate_check.py`), for a fraud
+pattern outside what Q1/Q2/Q3 look for: a ground agent without the actual vehicle in
+front of them re-submitting an **old accepted photo under a new claimed VRN**. Q1–Q3
+only ever look at *one* upload in isolation; this looks *across* all past uploads.
+
+- **Embedding**: `SigLipModel.embed_image()` (`backends/siglip.py`) — the same SigLIP 2
+  weights already loaded for Q1/Q3, just stopped one step earlier (the raw image
+  embedding, before it's compared against any text prompt). No second model.
+- **Storage/search**: Postgres + [pgvector](https://github.com/pgvector/pgvector)
+  (`backends/vector_store.py`) — each upload's embedding + its claimed VRN is stored;
+  a new upload is compared against everything on file via exact cosine nearest-neighbor
+  search (an HNSW index keeps this fast at scale). Needs `VFIV_PGVECTOR_DSN` set to a
+  reachable Postgres instance with the `pgvector` extension available; degrades to a
+  clear `checked=False` error (never a crash) when it isn't configured.
+- **Decision** (`decide_duplicate`): a hit only counts as a fraud lead when the closest
+  match is near-identical (`cosine similarity >= DUPLICATE_SIMILARITY_MIN`, default
+  `0.97`) **and** was filed under a **different** claimed VRN — a near-duplicate under
+  the *same* VRN is just an honest re-upload and is never flagged. A hit always resolves
+  to `MANUAL_REVIEW`, never an auto-`REJECT`: this is a signal for a human, not a verdict.
+
+```bash
+python -m vfiv.cli --image samples/truck2.jpg --type duplicate --vrn UP42T4069 --upload-id my_upload_1
+```
+
+```python
+from vfiv import check_duplicate
+result = check_duplicate(image, upload_id="upload_123", claimed_vrn="UP42T4069")
+result.is_duplicate_suspect, result.best_match_id, result.best_match_similarity, result.best_match_vrn
+```
+
+**Not wired into `combined.py`/`validate_upload`** — call it alongside the combined
+check (or from a batch job over recent uploads) rather than folding it into
+`CombinedResult.decision`, for two reasons: (1) `DUPLICATE_SIMILARITY_MIN` is an
+uncalibrated starting point — a threshold this consequential (it can send a genuine
+upload to manual review) should be tuned against real labeled pairs from your own
+data before it affects a production decision, and (2) it depends on a live pgvector
+instance, which nothing else in this module requires. `PGVECTOR_EMBED_DIM` (default
+768) must match whatever `SIGLIP_MODEL` actually outputs — verify with
+`SigLipModel().embed_image(img).shape` before running `vector_store.ensure_schema()`
+for the first time.
 
 ## Next
 

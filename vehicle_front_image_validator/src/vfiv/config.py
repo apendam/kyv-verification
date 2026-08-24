@@ -74,3 +74,23 @@ GEMINI_VERTEX_LOCATION = os.environ.get("GEMINI_VERTEX_LOCATION") or os.environ.
 CLARIFAI_USER_ID = os.environ.get("VFIV_CLARIFAI_USER_ID", "clarifai")
 CLARIFAI_APP_ID = os.environ.get("VFIV_CLARIFAI_APP_ID", "main")
 CLARIFAI_MODEL_ID = os.environ.get("VFIV_CLARIFAI_MODEL_ID", "logo")
+
+# --- Duplicate / photo-reuse detection (cross-upload, not one of Q1/Q2/Q3) ----------
+# NOT wired into validate_upload/CombinedResult yet — see validators/duplicate_check.py.
+# Reuses the same SigLIP 2 weights already loaded above (SIGLIP_MODEL): one extra
+# forward-pass step that stops at the raw image embedding instead of comparing it
+# against a text prompt. No second model to load.
+
+PGVECTOR_DSN = os.environ.get("VFIV_PGVECTOR_DSN")  # postgresql://user:pass@host/db ; unset -> not configured
+PGVECTOR_TABLE = os.environ.get("VFIV_PGVECTOR_TABLE", "upload_embeddings")
+# Must match SIGLIP_MODEL's actual image-embedding width — verify with
+# `SigLipModel().embed_image(some_image).shape` before running ensure_schema() for
+# the first time; 768 is the base-variant's typical projection dim, not a guarantee.
+PGVECTOR_EMBED_DIM = int(os.environ.get("VFIV_PGVECTOR_EMBED_DIM", "768"))
+
+# Cosine-similarity floor for "this upload's photo is a near-duplicate of a prior
+# one" (1.0 = identical direction). UNCALIBRATED — a starting point only. Tune this
+# against real labeled pairs from your own uploads (genuine near-duplicates vs.
+# genuinely different trucks) before trusting it — see README's "Duplicate
+# detection" section for why the raw number isn't meaningful on its own.
+DUPLICATE_SIMILARITY_MIN = float(os.environ.get("VFIV_DUPLICATE_SIMILARITY_MIN", "0.97"))

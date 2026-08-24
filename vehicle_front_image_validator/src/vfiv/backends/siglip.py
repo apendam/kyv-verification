@@ -48,6 +48,20 @@ class SigLipModel:
             probs = self.model(**inp).logits_per_image.softmax(dim=-1)[0].tolist()
         return dict(zip(labels.keys(), probs))
 
+    def embed_image(self, image) -> np.ndarray:
+        """Raw image embedding — same weights/forward-pass family as ``zero_shot``,
+        but stops before comparing against any text prompt. For nearest-neighbor
+        duplicate detection (``validators/duplicate_check.py``), not classification.
+        """
+        import torch
+        from PIL import Image
+        self._ensure()
+        img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+        inp = self.proc(images=img, return_tensors="pt").to(resolve_device(config.DEVICE))
+        with torch.no_grad():
+            feats = self.model.get_image_features(**inp)
+        return feats[0].cpu().numpy()
+
 
 class PoseClassifier:
     POSES = {
@@ -105,3 +119,9 @@ def get_make_classifier() -> MakeClassifier:
     if _make is None:
         _make = MakeClassifier(_shared_siglip())
     return _make
+
+
+def get_siglip_model() -> SigLipModel:
+    """Shared model instance for direct use (e.g. ``embed_image`` for duplicate
+    detection) — same lazily-warmed weights as the pose/make classifiers above."""
+    return _shared_siglip()

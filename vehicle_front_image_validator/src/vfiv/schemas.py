@@ -64,6 +64,24 @@ class MakeModelCheckResult(BaseModel):
     error: Optional[str] = None
 
 
+class DuplicateCheckResult(BaseModel):
+    """Cross-upload near-duplicate check — NOT one of Q1/Q2/Q3, and not folded into
+    ``CombinedResult``'s decision. Flags a MANUAL_REVIEW lead when this image is a
+    near-duplicate (by SigLIP embedding cosine similarity) of a PRIOR upload filed
+    under a DIFFERENT claimed VRN — the "same photo, swapped plate" fraud pattern.
+    A near-duplicate under the SAME VRN is an ordinary re-upload and is never
+    flagged. See ``validators/duplicate_check.py``."""
+    decision: Decision
+    reason: str
+    checked: bool
+    claimed_vrn: str
+    is_duplicate_suspect: bool
+    best_match_id: Optional[str] = None
+    best_match_similarity: Optional[float] = None  # cosine similarity, 0..1
+    best_match_vrn: Optional[str] = None
+    error: Optional[str] = None
+
+
 class CombinedResult(BaseModel):
     """Single entry point per upload: Q1 gates Q2+Q3 (a Q1 REJECT/MANUAL_REVIEW wins
     outright and neither Q2 nor Q3 runs). Once Q1 PASSes, Q2 and Q3 both run

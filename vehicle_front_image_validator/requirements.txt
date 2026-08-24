@@ -21,6 +21,12 @@ google-genai>=0.3       # Gemini 2.5 Pro/Flash (Q1/Q2/Q3 alternate VLM)
 google-cloud-vision>=3.7  # Logo Detection (Q3 make, alternate)
 requests>=2.31          # Clarifai REST API (Q3 make, alternate) — no official SDK dependency
 
+# Duplicate/photo-reuse detection (validators/duplicate_check.py) — cross-upload
+# near-duplicate search via pgvector. Not wired into validate_upload by default;
+# degrades with a clear error until VFIV_PGVECTOR_DSN is set (see config.py).
+psycopg[binary]>=3.1
+pgvector>=0.3.6
+
 # Test/inference interface.
 gradio>=4.30           # individual + bulk-CSV test UI (matches truck_verification_pipeline's own choice)
 pandas>=2.0            # bulk CSV parsing/result table
