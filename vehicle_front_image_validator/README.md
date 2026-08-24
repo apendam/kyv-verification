@@ -268,6 +268,7 @@ src/vfiv/
     google_vision.py                # GCV Logo Detection (experimentation only, no key configured)
     clarifai_backend.py              # Clarifai logo model (experimentation only, no key configured)
     vector_store.py                  # pgvector nearest-neighbor store (duplicate detection, see below)
+    fastag_reader.py                  # barcode/QR decode + Rekognition text read (FASTag check, see below)
   validators/
     base.py                    # shared Claude image+prompt -> JSON plumbing (Q1's judgment calls, Q3's model read)
     front_image.py             # Q1: real CV gate + narrowed Claude prompt -> decide_front_image()
@@ -275,6 +276,8 @@ src/vfiv/
     make_model_check.py          # Q3: SigLIP+Rekognition (make) + Claude (model) -> decide_make_model()
     combined.py                  # single entry point: Q1 gates Q2+Q3, worst-of severity ordering
     duplicate_check.py            # cross-upload near-duplicate check, NOT wired into combined.py (see below)
+    fastag_check.py                # FASTag sticker check, NOT wired into combined.py (see below)
+    side_image_check.py             # side/axle-image check, NOT wired into combined.py (see below)
   experiments/                  # test/inference interface's backend-selection layer (not production)
     legacy_prompts.py            # reconstructed original all-Claude Q1/Q2/Q3 prompts
     q1_select.py                  # Q1: real_cv | claude | gemini
@@ -332,6 +335,77 @@ instance, which nothing else in this module requires. `PGVECTOR_EMBED_DIM` (defa
 768) must match whatever `SIGLIP_MODEL` actually outputs — verify with
 `SigLipModel().embed_image(img).shape` before running `vector_store.ensure_schema()`
 for the first time.
+
+## FASTag check (not wired into `validate_upload`)
+
+`check_fastag_upload()` (`validators/fastag_check.py`) validates a close-up photo of
+the FASTag sticker itself — three independent, real reads of the tag's identity,
+cross-checked against each other as well as against the claimed value:
+
+- **QR code** (`backends/fastag_reader.py`, via `pyzbar`) — decodes the UPI-recharge
+  payload (`<fastag_id>@<bank_code>`) directly. Most damage-tolerant of the three
+  (built-in error correction).
+- **1D barcode** — decoded directly, checksum-backed.
+- **Printed digits** below the barcode — read via AWS Rekognition OCR, the only
+  genuinely fuzzy source of the three (confusable-character tolerance reused from
+  `truck_extract_match.plate.format.confusable_distance`).
+
+Forging all three consistently is a much higher bar than editing the visible digits
+alone, so **a disagreement between sources that were each legibly read is itself a
+REJECT**, checked before comparing any of them to the claimed value.
+
+Vehicle-class check: the real sample this was built from shows a printed class code
+(e.g. `04`) rather than a reliably-photographable tag colour — a class mismatch
+rejects instantly, before the identity check even runs. **Unverified beyond that one
+sample** — confirm the class-code heuristic holds across samples spanning multiple
+vehicle classes.
+
+```bash
+python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936 --class-code 04
+```
+
+Needs the system `libzbar0` library for `pyzbar` (`apt-get install libzbar0`), on
+top of the AWS credentials Q2 already needs.
+
+## Side/axle-image check (not wired into `validate_upload`)
+
+`check_side_image_upload()` (`validators/side_image_check.py`) validates the side
+image used for axle-count verification, with two goals:
+
+**Axle count** — no dedicated axle/wheel detector is wired (would need a custom-
+trained model and a labeled dataset); this is a narrowed Claude VLM judgment call
+instead, gated by its own reported confidence. Known, real limitations a single 2D
+photo can't fully resolve: lift/tag axles raised off the ground, and dual/twin
+wheels on one axle (2 wheels != 2 axles) — the prompt asks the model to flag
+suspected lift axles rather than silently guess.
+
+**Identity-to-claimed-vehicle** — does this side photo belong to the SAME truck as
+the claimed VRN/make? Routed by `SideImageTypeClassifier`
+(`backends/siglip.py`) into three buckets of **decreasing** reliability:
+
+| Bucket | Strategy | Reliability |
+|---|---|---|
+| `vrn_visible` | Re-runs Q2's own VRN detector/matcher on this image, unchanged | Strong — exact identity |
+| `corner_view` | Make/model match + a direct SigLIP embedding similarity against this truck's own on-file front photo | Uncalibrated — see caveat below |
+| `pure_side_profile` | Make/model match only | Weak by design — never a confident PASS alone |
+
+The `corner_view` embedding-similarity check is a **direct 1:1 comparison**
+(`front_reference_image` vs. this crop), not a vector-DB search — and it is
+explicitly **uncalibrated**: a general SigLIP embedding is trained for semantic
+similarity (what make/model is this), not individual-vehicle re-identification, so
+it may not reliably separate "same truck, different angle" from "different truck,
+same make/model/colour." Validate `config.SIDE_IMAGE_SIMILARITY_MIN` against real
+labeled pairs before trusting it. The `pure_side_profile` bucket is the genuinely
+open problem flagged in design discussion, not solved here — a make/model match
+from that bucket alone is capped at `MANUAL_REVIEW`.
+
+Duplicate detection reuses `check_duplicate()` unchanged (only if `upload_id` is
+passed) — **known limitation**: shares the same pgvector table as front-image
+uploads unless you scope it separately.
+
+```bash
+python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3
+```
 
 ## Next
 

@@ -27,6 +27,11 @@ requests>=2.31          # Clarifai REST API (Q3 make, alternate) — no official
 psycopg[binary]>=3.1
 pgvector>=0.3.6
 
+# FASTag validator (validators/fastag_check.py) — direct barcode/QR decode.
+# NOTE: pyzbar needs the system libzbar0 shared library (apt-get install libzbar0
+# on Debian/Ubuntu) — a real OS-level dependency, not satisfied by pip alone.
+pyzbar>=0.1.9
+
 # Test/inference interface.
 gradio>=4.30           # individual + bulk-CSV test UI (matches truck_verification_pipeline's own choice)
 pandas>=2.0            # bulk CSV parsing/result table

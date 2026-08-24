@@ -5,8 +5,10 @@ import sys
 
 from vfiv.validators.combined import validate_upload
 from vfiv.validators.duplicate_check import check_duplicate
+from vfiv.validators.fastag_check import check_fastag_upload
 from vfiv.validators.front_image import validate_front_image
 from vfiv.validators.make_model_check import validate_make_model
+from vfiv.validators.side_image_check import check_side_image_upload
 from vfiv.validators.vrn_check import validate_vrn
 
 VALIDATORS = {
@@ -14,9 +16,9 @@ VALIDATORS = {
     "vrn": validate_vrn,
     "make_model": validate_make_model,
     "combined": validate_upload,
-    "duplicate": check_duplicate,  # not wired into "combined" — see validators/duplicate_check.py
-    # "side": validate_side_image,      # planned
-    # "fastag": validate_fastag_image,  # planned
+    "duplicate": check_duplicate,      # not wired into "combined" — see validators/duplicate_check.py
+    "fastag": check_fastag_upload,     # not wired into "combined" — see validators/fastag_check.py
+    "side": check_side_image_upload,   # not wired into "combined" — see validators/side_image_check.py
 }
 def main() -> None:
     ap = argparse.ArgumentParser(description="Validate an uploaded vehicle document/image.")
@@ -27,8 +29,16 @@ def main() -> None:
     ap.add_argument("--make", help="Claimed make/manufacturer (required for --type make_model|combined).")
     ap.add_argument("--model-name", help="Claimed model (optional for --type make_model|combined — "
                                           "only enforced if read with high confidence).")
-    ap.add_argument("--upload-id", help="Stable id for this upload (--type duplicate only); "
+    ap.add_argument("--upload-id", help="Stable id for this upload (--type duplicate|side); "
                                          "defaults to the image's filename if omitted.")
+    ap.add_argument("--fastag-id", help="Claimed FASTag id (required for --type fastag).")
+    ap.add_argument("--class-code", help="Claimed vehicle-class code printed on the tag, "
+                                          "e.g. '04' (optional for --type fastag).")
+    ap.add_argument("--bank-code", help="Claimed issuing-bank code from the QR payload "
+                                         "(optional for --type fastag).")
+    ap.add_argument("--axle-count", type=int, help="Claimed axle count (required for --type side).")
+    ap.add_argument("--front-reference", help="Path to this truck's on-file front photo "
+                                               "(optional for --type side, corner_view bucket only).")
     args = ap.parse_args()
 
     if args.type == "vrn":
@@ -48,6 +58,16 @@ def main() -> None:
             ap.error("--vrn is required for --type duplicate")
         upload_id = args.upload_id or os.path.basename(args.image)
         result = check_duplicate(args.image, upload_id, args.vrn)
+    elif args.type == "fastag":
+        if not args.fastag_id:
+            ap.error("--fastag-id is required for --type fastag")
+        result = check_fastag_upload(args.image, args.fastag_id, args.class_code, args.bank_code)
+    elif args.type == "side":
+        if not args.vrn or not args.make or args.axle_count is None:
+            ap.error("--vrn, --make, and --axle-count are required for --type side")
+        upload_id = args.upload_id or os.path.basename(args.image)
+        result = check_side_image_upload(args.image, args.vrn, args.make, args.axle_count,
+                                          upload_id=upload_id, front_reference_image=args.front_reference)
     else:
         result = VALIDATORS[args.type](args.image)
 

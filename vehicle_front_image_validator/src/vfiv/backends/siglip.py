@@ -95,9 +95,35 @@ class MakeClassifier:
         return {"make": make, "make_confidence": float(probs[make]) * 100.0}
 
 
+class SideImageTypeClassifier:
+    """Best-effort triage for a side/axle-image upload: does it show a legible VRN
+    plate, BOTH the front and side of the truck (a corner/three-quarter shot), or
+    only a pure side profile? ``validators/side_image_check.py`` routes to a
+    different identity-binding strategy per bucket, in decreasing order of
+    reliability — see that module's docstring."""
+    LABELS = {
+        "vrn_visible": ("the side of a truck with a visible license plate "
+                         "showing the registration number"),
+        "corner_view": ("a three-quarter corner view of a truck showing both its "
+                         "front grille/headlights and its side wheels"),
+        "pure_side_profile": ("a straight-on side profile view of a truck showing "
+                               "only its side body and wheels, no front or plate visible"),
+    }
+
+    def __init__(self, siglip: SigLipModel):
+        self.s = siglip
+
+    def predict(self, image) -> dict:
+        from PIL import Image
+        img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+        probs = self.s.zero_shot(img, self.LABELS)
+        return {"bucket": max(probs, key=probs.get), "probs": probs}
+
+
 _siglip: Optional[SigLipModel] = None
 _pose: Optional[PoseClassifier] = None
 _make: Optional[MakeClassifier] = None
+_side_type: Optional[SideImageTypeClassifier] = None
 
 
 def _shared_siglip() -> SigLipModel:
@@ -125,3 +151,10 @@ def get_siglip_model() -> SigLipModel:
     """Shared model instance for direct use (e.g. ``embed_image`` for duplicate
     detection) — same lazily-warmed weights as the pose/make classifiers above."""
     return _shared_siglip()
+
+
+def get_side_image_type_classifier() -> SideImageTypeClassifier:
+    global _side_type
+    if _side_type is None:
+        _side_type = SideImageTypeClassifier(_shared_siglip())
+    return _side_type

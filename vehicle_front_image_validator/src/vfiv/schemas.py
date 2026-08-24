@@ -82,6 +82,47 @@ class DuplicateCheckResult(BaseModel):
     error: Optional[str] = None
 
 
+class FastagCheckResult(BaseModel):
+    """FASTag sticker validator — cross-checks THREE independent identity sources
+    (QR decode, 1D-barcode decode, OCR'd printed digits) against EACH OTHER as well
+    as against the claimed value; a disagreement between sources that were each
+    legibly read is itself a REJECT-worthy tamper signal, checked before the
+    match-against-claim step. See ``validators/fastag_check.py``."""
+    decision: Decision
+    reason: str
+    checked: bool
+    claimed_fastag_id: str
+    claimed_class_code: Optional[str] = None
+    claimed_bank_code: Optional[str] = None
+    extracted_class_code: Optional[str] = None
+    decoded_sources: Optional[dict[str, str]] = None  # e.g. {"qr": "...", "barcode:code128": "..."}
+    extracted_printed_id: Optional[str] = None
+    matched_via: Optional[str] = None  # "qr" | "barcode:<symbology>" | "ocr" | None
+    error: Optional[str] = None
+
+
+class SideImageCheckResult(BaseModel):
+    """Side/axle-image validator — axle count (Claude judgment call, no dedicated
+    detector wired) + identity-to-claimed-vehicle, routed by
+    ``SideImageTypeClassifier`` into three buckets of DECREASING reliability
+    (vrn_visible > corner_view > pure_side_profile — the last is NEVER a confident
+    PASS on its own, see ``validators/side_image_check.py``). Overall ``decision``
+    is the worst of axle / identity / duplicate, same REJECT > MANUAL_REVIEW >
+    PASS ordering as ``CombinedResult``."""
+    decision: Decision
+    reason: str
+    checked: bool
+    claimed_vrn: str
+    claimed_make: str
+    claimed_axle_count: int
+    axle_count: Optional[int] = None
+    axle_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
+    identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
+    identity_decision: Optional[str] = None
+    duplicate_is_suspect: Optional[bool] = None
+    error: Optional[str] = None
+
+
 class CombinedResult(BaseModel):
     """Single entry point per upload: Q1 gates Q2+Q3 (a Q1 REJECT/MANUAL_REVIEW wins
     outright and neither Q2 nor Q3 runs). Once Q1 PASSes, Q2 and Q3 both run

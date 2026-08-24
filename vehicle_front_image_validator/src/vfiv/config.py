@@ -94,3 +94,23 @@ PGVECTOR_EMBED_DIM = int(os.environ.get("VFIV_PGVECTOR_EMBED_DIM", "768"))
 # genuinely different trucks) before trusting it — see README's "Duplicate
 # detection" section for why the raw number isn't meaningful on its own.
 DUPLICATE_SIMILARITY_MIN = float(os.environ.get("VFIV_DUPLICATE_SIMILARITY_MIN", "0.97"))
+
+# --- FASTag validator (validators/fastag_check.py) ----------------------------
+# Printed-digit OCR fuzz budget -- same idea as VRN_MAX_CONFUSABLE_EDITS, but only
+# ever the last-resort match arm: the QR/barcode decodes are exact and checked first.
+FASTAG_OCR_MAX_CONFUSABLE_EDITS = 1
+
+# --- Side/axle-image validator (validators/side_image_check.py) ----------------
+# No dedicated axle/wheel detector is wired (would need a custom-trained model and
+# a labeled dataset) -- axle count is a narrowed Claude VLM judgment call instead,
+# gated by its own reported confidence.
+AXLE_COUNT_CONF_MIN = float(os.environ.get("VFIV_AXLE_COUNT_CONF_MIN", "70.0"))
+
+# Cosine-similarity floor for "this corner-shot's vehicle crop looks like the same
+# truck as the claimed vehicle's on-file front photo". UNCALIBRATED -- a general
+# SigLIP embedding is trained for semantic similarity (what make/model is this),
+# not individual-vehicle re-identification, so it may not reliably separate "same
+# truck, different angle" from "different truck, same make/model/colour". Validate
+# against real same-truck vs. same-model-different-truck pairs before trusting
+# this threshold in production — see side_image_check.py's module docstring.
+SIDE_IMAGE_SIMILARITY_MIN = float(os.environ.get("VFIV_SIDE_IMAGE_SIMILARITY_MIN", "0.97"))
