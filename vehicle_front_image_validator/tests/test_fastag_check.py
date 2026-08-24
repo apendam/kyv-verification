@@ -2,9 +2,8 @@ from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payloa
 from vfiv.validators.fastag_check import decide_fastag
 
 
-def _read(codes=None, class_code=None, printed_id=None) -> dict:
-    return {"checked": True, "read": FastagRead(
-        decoded_codes=codes or [], class_code_text=class_code, printed_id_text=printed_id)}
+def _read(codes=None, printed_id=None) -> dict:
+    return {"checked": True, "read": FastagRead(decoded_codes=codes or [], printed_id_text=printed_id)}
 
 
 def test_parse_qr_payload_splits_id_and_bank():
@@ -18,22 +17,10 @@ def test_parse_qr_payload_rejects_unexpected_shape():
     assert parse_qr_payload("a@b@c") == (None, None)
 
 
-def test_wrong_class_code_rejects_instantly_before_any_id_check():
-    """Per the requirement: a class mismatch returns REJECT immediately, without
-    even looking at whether the id would otherwise have matched."""
-    r = _read(
-        codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")],
-        class_code="07", printed_id="607469-009-0874936",
-    )
-    result = decide_fastag(r, claimed_fastag_id="607469-009-0874936", claimed_class_code="04")
-    assert result.decision == "REJECT"
-    assert "class code" in result.reason
-
-
 def test_barcode_matches_claimed_id_passes():
     r = _read(codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")],
-              class_code="04", printed_id="607469-009-0874936")
-    result = decide_fastag(r, claimed_fastag_id="607469-009-0874936", claimed_class_code="04")
+              printed_id="607469-009-0874936")
+    result = decide_fastag(r, claimed_fastag_id="607469-009-0874936")
     assert result.decision == "PASS"
     assert result.matched_via == "barcode:code128"
 

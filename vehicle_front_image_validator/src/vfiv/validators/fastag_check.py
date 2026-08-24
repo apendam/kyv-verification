@@ -13,12 +13,6 @@ printed digits) is a much higher bar than editing the visible digits alone — s
 MISMATCH between sources that were each independently, legibly read is itself a
 REJECT-worthy tamper signal, checked BEFORE comparing any of them to the claimed
 value. See ``backends/fastag_reader.py`` for the raw reads.
-
-Vehicle-class check: the real sample this was built from shows a printed class code
-(e.g. "04") in the corner, not a reliably-photographable tag colour — verify this
-holds across samples spanning multiple vehicle classes before trusting it; a colour
-classifier (same shape as ``backends/plate_colour.py``) is a reasonable fallback if
-it doesn't.
 """
 from __future__ import annotations
 
@@ -54,7 +48,6 @@ def classify_fastag_upload(image) -> dict:
 def decide_fastag(
     r: dict,
     claimed_fastag_id: str,
-    claimed_class_code: str | None = None,
     claimed_bank_code: str | None = None,
     max_ocr_edits: int = config.FASTAG_OCR_MAX_CONFUSABLE_EDITS,
 ) -> FastagCheckResult:
@@ -62,31 +55,16 @@ def decide_fastag(
     — see ``classify_fastag_upload``).
 
     Order of operations:
-      1. class-code mismatch -> instant REJECT (per the "wrong vehicle class ->
-         return incorrect immediately" requirement)
-      2. cross-source disagreement (sources that WERE legibly read disagree with
+      1. cross-source disagreement (sources that WERE legibly read disagree with
          EACH OTHER) -> REJECT — a stronger tamper signal than any single mismatch
          against the claimed value
-      3. match against the claimed value: QR/barcode (exact, deterministic) first,
+      2. match against the claimed value: QR/barcode (exact, deterministic) first,
          OCR (fuzzy) only as a last resort
-      4. nothing readable at all -> MANUAL_REVIEW, not REJECT — a bad photo isn't
+      3. nothing readable at all -> MANUAL_REVIEW, not REJECT — a bad photo isn't
          proof of fraud
     """
     read = r["read"]
     claimed_id_norm = _norm(claimed_fastag_id)
-
-    if claimed_class_code and read.class_code_text:
-        if _norm(read.class_code_text) != _norm(claimed_class_code):
-            return FastagCheckResult(
-                decision="REJECT",
-                checked=True,
-                claimed_fastag_id=claimed_fastag_id,
-                claimed_class_code=claimed_class_code,
-                claimed_bank_code=claimed_bank_code,
-                extracted_class_code=read.class_code_text,
-                reason=(f"tag class code '{read.class_code_text}' != claimed "
-                        f"'{claimed_class_code}' — wrong vehicle class"),
-            )
 
     sources: dict[str, str] = {}
     qr_bank_code = None
@@ -110,9 +88,7 @@ def decide_fastag(
             decision="REJECT",
             checked=True,
             claimed_fastag_id=claimed_fastag_id,
-            claimed_class_code=claimed_class_code,
             claimed_bank_code=claimed_bank_code,
-            extracted_class_code=read.class_code_text,
             decoded_sources=sources,
             extracted_printed_id=read.printed_id_text,
             reason=(f"identity sources disagree with each other "
@@ -151,9 +127,7 @@ def decide_fastag(
         decision=decision,
         checked=True,
         claimed_fastag_id=claimed_fastag_id,
-        claimed_class_code=claimed_class_code,
         claimed_bank_code=claimed_bank_code,
-        extracted_class_code=read.class_code_text,
         decoded_sources=sources,
         extracted_printed_id=read.printed_id_text,
         matched_via=matched_via,
@@ -164,7 +138,6 @@ def decide_fastag(
 def check_fastag_upload(
     image,
     claimed_fastag_id: str,
-    claimed_class_code: str | None = None,
     claimed_bank_code: str | None = None,
     max_ocr_edits: int = config.FASTAG_OCR_MAX_CONFUSABLE_EDITS,
 ) -> FastagCheckResult:
@@ -176,9 +149,8 @@ def check_fastag_upload(
             decision="MANUAL_REVIEW",
             checked=False,
             claimed_fastag_id=claimed_fastag_id,
-            claimed_class_code=claimed_class_code,
             claimed_bank_code=claimed_bank_code,
             reason=f"fastag check unavailable ({r.get('error', '?')})",
             error=r.get("error"),
         )
-    return decide_fastag(r, claimed_fastag_id, claimed_class_code, claimed_bank_code, max_ocr_edits)
+    return decide_fastag(r, claimed_fastag_id, claimed_bank_code, max_ocr_edits)

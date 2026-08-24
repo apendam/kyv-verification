@@ -354,14 +354,8 @@ Forging all three consistently is a much higher bar than editing the visible dig
 alone, so **a disagreement between sources that were each legibly read is itself a
 REJECT**, checked before comparing any of them to the claimed value.
 
-Vehicle-class check: the real sample this was built from shows a printed class code
-(e.g. `04`) rather than a reliably-photographable tag colour — a class mismatch
-rejects instantly, before the identity check even runs. **Unverified beyond that one
-sample** — confirm the class-code heuristic holds across samples spanning multiple
-vehicle classes.
-
 ```bash
-python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936 --class-code 04
+python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936
 ```
 
 Needs the system `libzbar0` library for `pyzbar` (`apt-get install libzbar0`), on

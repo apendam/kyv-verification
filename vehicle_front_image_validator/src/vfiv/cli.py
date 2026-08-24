@@ -32,8 +32,6 @@ def main() -> None:
     ap.add_argument("--upload-id", help="Stable id for this upload (--type duplicate|side); "
                                          "defaults to the image's filename if omitted.")
     ap.add_argument("--fastag-id", help="Claimed FASTag id (required for --type fastag).")
-    ap.add_argument("--class-code", help="Claimed vehicle-class code printed on the tag, "
-                                          "e.g. '04' (optional for --type fastag).")
     ap.add_argument("--bank-code", help="Claimed issuing-bank code from the QR payload "
                                          "(optional for --type fastag).")
     ap.add_argument("--axle-count", type=int, help="Claimed axle count (required for --type side).")
@@ -61,7 +59,7 @@ def main() -> None:
     elif args.type == "fastag":
         if not args.fastag_id:
             ap.error("--fastag-id is required for --type fastag")
-        result = check_fastag_upload(args.image, args.fastag_id, args.class_code, args.bank_code)
+        result = check_fastag_upload(args.image, args.fastag_id, args.bank_code)
     elif args.type == "side":
         if not args.vrn or not args.make or args.axle_count is None:
             ap.error("--vrn, --make, and --axle-count are required for --type side")

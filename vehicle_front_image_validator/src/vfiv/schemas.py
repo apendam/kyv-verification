@@ -92,9 +92,7 @@ class FastagCheckResult(BaseModel):
     reason: str
     checked: bool
     claimed_fastag_id: str
-    claimed_class_code: Optional[str] = None
     claimed_bank_code: Optional[str] = None
-    extracted_class_code: Optional[str] = None
     decoded_sources: Optional[dict[str, str]] = None  # e.g. {"qr": "...", "barcode:code128": "..."}
     extracted_printed_id: Optional[str] = None
     matched_via: Optional[str] = None  # "qr" | "barcode:<symbology>" | "ocr" | None

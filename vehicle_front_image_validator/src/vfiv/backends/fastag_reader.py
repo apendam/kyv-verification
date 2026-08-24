@@ -1,5 +1,5 @@
 """FASTag sticker reader — decodes the tag's barcode + QR code directly, and reads
-the printed text (class code, human-readable serial) via AWS Rekognition.
+the printed human-readable serial via AWS Rekognition.
 
 Three independent representations of the tag's identity live on the sticker:
   - the 1D barcode (Code128-style) — decoded directly, checksum-backed
@@ -44,7 +44,6 @@ class DecodedCode:
 @dataclass
 class FastagRead:
     decoded_codes: list[DecodedCode]
-    class_code_text: Optional[str]  # best-effort OCR'd class code, e.g. "04"
     printed_id_text: Optional[str]  # best-effort OCR'd printed barcode number
 
 
@@ -53,7 +52,6 @@ _CREDENTIAL_ERROR_TOKENS = (
     "security token", "AccessDenied", "credentials",
 )
 
-_CLASS_CODE_RE = re.compile(r"^\d{1,2}$")
 _PRINTED_ID_RE = re.compile(r"^[\d\-]{8,}$")
 
 
@@ -107,15 +105,6 @@ class _FastagTextReader:
                 if d["Type"] == "LINE" and d["Confidence"] >= min_conf]
 
 
-def _pick_class_code(lines: list[str]) -> Optional[str]:
-    """Best-effort: the shortest 1-2 digit standalone line. UNVALIDATED against
-    real samples beyond the one tag photo this was designed from — confirm this
-    heuristic holds across samples from multiple vehicle classes before trusting
-    it as a gate (see fastag_check.py's module docstring)."""
-    candidates = [ln for ln in lines if _CLASS_CODE_RE.match(ln)]
-    return min(candidates, key=len) if candidates else None
-
-
 def _pick_printed_id(lines: list[str]) -> Optional[str]:
     """Best-effort: the longest digits-and-hyphens line (the barcode's printed
     human-readable number, e.g. '607469-009-0874936')."""
@@ -144,6 +133,5 @@ def read_fastag(image, reader: _FastagTextReader | None = None) -> FastagRead:
 
     return FastagRead(
         decoded_codes=decoded,
-        class_code_text=_pick_class_code(lines),
         printed_id_text=_pick_printed_id(lines),
     )
