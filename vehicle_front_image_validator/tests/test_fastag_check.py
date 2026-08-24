@@ -1,4 +1,6 @@
-from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payload
+import pytest
+
+from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payload, read_fastag
 from vfiv.validators.fastag_check import decide_fastag
 
 
@@ -74,3 +76,10 @@ def test_nothing_readable_is_manual_review_not_reject():
     r = _read()
     result = decide_fastag(r, claimed_fastag_id="607469-009-0874936")
     assert result.decision == "MANUAL_REVIEW"
+
+
+def test_unknown_ocr_backend_raises_before_any_image_io():
+    """The backend name is validated first, before decode_codes/pyzbar even opens
+    the image -- so this raises ValueError even for a path that doesn't exist."""
+    with pytest.raises(ValueError, match="unknown FASTag OCR backend"):
+        read_fastag("does-not-exist.jpg", backend="not-a-real-backend")

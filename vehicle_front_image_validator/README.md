@@ -346,9 +346,12 @@ cross-checked against each other as well as against the claimed value:
   payload (`<fastag_id>@<bank_code>`) directly. Most damage-tolerant of the three
   (built-in error correction).
 - **1D barcode** — decoded directly, checksum-backed.
-- **Printed digits** below the barcode — read via AWS Rekognition OCR, the only
-  genuinely fuzzy source of the three (confusable-character tolerance reused from
-  `truck_extract_match.plate.format.confusable_distance`).
+- **Printed digits** below the barcode — read via OCR, the only genuinely fuzzy
+  source of the three (confusable-character tolerance reused from
+  `truck_extract_match.plate.format.confusable_distance`). **Backend-selectable**:
+  `backend="rekognition"` (default) | `"claude"` | `"gemini"` — the barcode/QR
+  decode is a deterministic algorithm either way, not a model call, so only this
+  OCR step swaps.
 
 Forging all three consistently is a much higher bar than editing the visible digits
 alone, so **a disagreement between sources that were each legibly read is itself a
@@ -356,10 +359,11 @@ REJECT**, checked before comparing any of them to the claimed value.
 
 ```bash
 python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936
+python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936 --backend gemini
 ```
 
 Needs the system `libzbar0` library for `pyzbar` (`apt-get install libzbar0`), on
-top of the AWS credentials Q2 already needs.
+top of whichever OCR backend's credentials you're using (AWS by default).
 
 ## Side/axle-image check (not wired into `validate_upload`)
 
@@ -367,11 +371,12 @@ top of the AWS credentials Q2 already needs.
 image used for axle-count verification, with two goals:
 
 **Axle count** — no dedicated axle/wheel detector is wired (would need a custom-
-trained model and a labeled dataset); this is a narrowed Claude VLM judgment call
-instead, gated by its own reported confidence. Known, real limitations a single 2D
-photo can't fully resolve: lift/tag axles raised off the ground, and dual/twin
-wheels on one axle (2 wheels != 2 axles) — the prompt asks the model to flag
-suspected lift axles rather than silently guess.
+trained model and a labeled dataset); this is a narrowed VLM judgment call instead,
+gated by its own reported confidence. **Backend-selectable**: `backend="claude"`
+(default) | `"gemini"` — same prompt either way, only which model reads it changes.
+Known, real limitations a single 2D photo can't fully resolve: lift/tag axles
+raised off the ground, and dual/twin wheels on one axle (2 wheels != 2 axles) — the
+prompt asks the model to flag suspected lift axles rather than silently guess.
 
 **Identity-to-claimed-vehicle** — does this side photo belong to the SAME truck as
 the claimed VRN/make? Routed by `SideImageTypeClassifier`
@@ -399,6 +404,7 @@ uploads unless you scope it separately.
 
 ```bash
 python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3
+python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3 --backend gemini
 ```
 
 ## Next

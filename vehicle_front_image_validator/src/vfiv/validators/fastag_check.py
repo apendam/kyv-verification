@@ -35,11 +35,17 @@ def _fuzzy_match(a: str, b: str, max_edits: int) -> bool:
     return confusable_distance(a, b) <= max_edits
 
 
-def classify_fastag_upload(image) -> dict:
+def classify_fastag_upload(
+    image,
+    backend: str = config.FASTAG_OCR_BACKEND,
+    vlm_model: str | None = None,
+) -> dict:
     """image: file path or PIL.Image. Real barcode/QR decode + OCR — no
-    matching/decisioning here, see ``decide_fastag``."""
+    matching/decisioning here, see ``decide_fastag``. ``backend`` selects the
+    printed-digit OCR source ("rekognition" | "claude" | "gemini") — see
+    ``backends/fastag_reader.py``; the barcode/QR decode is unaffected either way."""
     try:
-        read = read_fastag(image)
+        read = read_fastag(image, backend=backend, vlm_model=vlm_model)
     except FastagReadError as e:
         return {"checked": False, "error": str(e)}
     return {"checked": True, "read": read}
@@ -140,10 +146,14 @@ def check_fastag_upload(
     claimed_fastag_id: str,
     claimed_bank_code: str | None = None,
     max_ocr_edits: int = config.FASTAG_OCR_MAX_CONFUSABLE_EDITS,
+    backend: str = config.FASTAG_OCR_BACKEND,
+    vlm_model: str | None = None,
 ) -> FastagCheckResult:
     """Read then decide (single-call path). See ``decide_fastag`` for the decision
-    logic and ``classify_fastag_upload`` for the raw reads."""
-    r = classify_fastag_upload(image)
+    logic and ``classify_fastag_upload`` for the raw reads. ``backend`` — "rekognition"
+    (default) | "claude" | "gemini" — selects the printed-digit OCR source only; the
+    barcode/QR decode always runs the same way regardless."""
+    r = classify_fastag_upload(image, backend=backend, vlm_model=vlm_model)
     if not r.get("checked"):
         return FastagCheckResult(
             decision="MANUAL_REVIEW",

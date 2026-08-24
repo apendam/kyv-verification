@@ -85,11 +85,25 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom) if denom else 0.0
 
 
-def classify_axle_count(image, model: str = config.VLM_MODEL) -> dict:
-    """Claude judgment call — see module docstring for why no dedicated detector
-    is wired, and the real limitations (lift axles, dual wheels) this can't fully
-    resolve from a single 2D photo."""
-    r = call_vlm_json(image, AXLE_PROMPT, model, max_tokens=200)
+AXLE_COUNT_BACKENDS = ["claude", "gemini"]
+
+
+def classify_axle_count(
+    image,
+    backend: str = config.AXLE_COUNT_BACKEND,
+    model: str | None = None,
+) -> dict:
+    """VLM judgment call — see module docstring for why no dedicated detector is
+    wired, and the real limitations (lift axles, dual wheels) this can't fully
+    resolve from a single 2D photo. ``backend`` — "claude" (default) | "gemini" —
+    same prompt either way, only which model reads it changes."""
+    if backend == "claude":
+        r = call_vlm_json(image, AXLE_PROMPT, model or config.VLM_MODEL, max_tokens=200)
+    elif backend == "gemini":
+        from vfiv.backends.gemini import call_gemini_json
+        r = call_gemini_json(image, AXLE_PROMPT, model=model)
+    else:
+        raise ValueError(f"unknown axle-count backend: {backend!r} (expected one of {AXLE_COUNT_BACKENDS})")
     if not r.get("checked"):
         return r
     return {
@@ -188,6 +202,8 @@ def check_side_image_upload(
     front_reference_image=None,
     axle_conf_min: float = config.AXLE_COUNT_CONF_MIN,
     side_image_similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
+    axle_backend: str = config.AXLE_COUNT_BACKEND,
+    axle_model: str | None = None,
 ) -> SideImageCheckResult:
     """The single entry point for a side/axle-image upload. Runs duplicate check
     (if ``upload_id`` given), axle count, and identity-binding (routed by
@@ -198,13 +214,16 @@ def check_side_image_upload(
     used by the corner-view bucket's embedding-similarity arm; without it, that
     bucket falls back to make/model-only (same ceiling as the pure-side-profile
     bucket).
+
+    ``axle_backend`` — "claude" (default) | "gemini" — selects which model reads
+    the axle count; the identity/duplicate checks are unaffected by this.
     """
     try:
         arr = load_rgb_array(image)
 
         dup = check_duplicate(image, upload_id, claimed_vrn) if upload_id else None
 
-        axle_raw = classify_axle_count(image)
+        axle_raw = classify_axle_count(image, backend=axle_backend, model=axle_model)
         if axle_raw.get("checked"):
             axle = decide_axle_count(axle_raw, claimed_axle_count, axle_conf_min)
         else:

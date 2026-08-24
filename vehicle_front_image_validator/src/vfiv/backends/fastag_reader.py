@@ -1,5 +1,5 @@
 """FASTag sticker reader — decodes the tag's barcode + QR code directly, and reads
-the printed human-readable serial via AWS Rekognition.
+the printed human-readable serial via a selectable OCR backend.
 
 Three independent representations of the tag's identity live on the sticker:
   - the 1D barcode (Code128-style) — decoded directly, checksum-backed
@@ -12,9 +12,15 @@ Three independent representations of the tag's identity live on the sticker:
 ``validators/fastag_check.py`` cross-checks all three against each other as well as
 against the claimed value — this module only does the raw reads, no decisioning.
 
+The barcode/QR decode is a deterministic algorithm (pyzbar/zbar), not a model call —
+there's no "backend" to switch there. Only the printed-digit OCR step is model-backed
+and swappable: ``read_fastag(..., backend=...)`` accepts "rekognition" (default),
+"claude", or "gemini" — see ``FASTAG_OCR_BACKENDS``. All three return the same
+``FastagRead`` shape, so ``fastag_check.py``'s decisioning never changes.
+
 Needs the system ``libzbar0`` shared library (``apt-get install libzbar0`` on
 Debian/Ubuntu) for ``pyzbar`` to import — not just a pip package, a real OS-level
-dependency worth calling out in deploy docs alongside AWS credentials.
+dependency worth calling out in deploy docs alongside AWS/Anthropic/Gemini credentials.
 """
 from __future__ import annotations
 
@@ -53,6 +59,17 @@ _CREDENTIAL_ERROR_TOKENS = (
 )
 
 _PRINTED_ID_RE = re.compile(r"^[\d\-]{8,}$")
+
+FASTAG_OCR_BACKENDS = ["rekognition", "claude", "gemini"]
+
+_FASTAG_TEXT_PROMPT = """You are reading the printed human-readable serial number on an
+uploaded FASTag sticker photo, for a document-validation platform. This is the digit
+string printed directly below/near the 1D barcode (often shown as hyphen-separated
+groups, e.g. "607469-009-0874936") — NOT the barcode's bars themselves, and NOT the QR
+code. Leave it empty rather than guessing if it isn't legible.
+
+Reply with STRICT JSON only:
+{"printed_id":"<digits/hyphens as printed, empty if unreadable>","reason":"<short>"}"""
 
 
 def decode_codes(image) -> list[DecodedCode]:
@@ -112,12 +129,7 @@ def _pick_printed_id(lines: list[str]) -> Optional[str]:
     return max(candidates, key=len) if candidates else None
 
 
-def read_fastag(image, reader: _FastagTextReader | None = None) -> FastagRead:
-    """Raises ``FastagReadError`` only on an AWS credential failure — a photo with
-    nothing decodable/legible is still a normal result (all fields None/empty),
-    not an error; ``validators/fastag_check.py`` decides what that means."""
-    decoded = decode_codes(image)
-
+def _read_printed_id_rekognition(image, reader: _FastagTextReader | None) -> Optional[str]:
     reader = reader or _FastagTextReader()
     try:
         lines = reader.read_lines(image)
@@ -130,8 +142,46 @@ def read_fastag(image, reader: _FastagTextReader | None = None) -> FastagRead:
                 f"(underlying error: {msg})"
             ) from e
         raise
+    return _pick_printed_id(lines)
 
-    return FastagRead(
-        decoded_codes=decoded,
-        printed_id_text=_pick_printed_id(lines),
-    )
+
+def _read_printed_id_vlm(image, model: str | None, provider: str) -> Optional[str]:
+    if provider == "claude":
+        from vfiv import config as _config
+        from vfiv.validators.base import call_vlm_json
+        r = call_vlm_json(image, _FASTAG_TEXT_PROMPT, model or _config.VLM_MODEL)
+    else:  # gemini
+        from vfiv.backends.gemini import call_gemini_json
+        r = call_gemini_json(image, _FASTAG_TEXT_PROMPT, model=model)
+    if not r.get("checked"):
+        raise FastagReadError(f"{provider} read unavailable: {r.get('error', '?')}")
+    return str(r.get("printed_id", "") or "").strip() or None
+
+
+def read_fastag(
+    image,
+    backend: str = "rekognition",
+    reader: _FastagTextReader | None = None,
+    vlm_model: str | None = None,
+) -> FastagRead:
+    """``backend`` selects how the printed human-readable digits are read —
+    "rekognition" (default), "claude", or "gemini" (see ``FASTAG_OCR_BACKENDS``).
+    The barcode/QR decode (``decode_codes``) is unaffected by ``backend`` — it's a
+    deterministic algorithm, not a model call.
+
+    Raises ``FastagReadError`` on a credential/availability failure for whichever
+    backend was selected — a photo with nothing legible is still a normal result
+    (all fields None/empty), not an error; ``validators/fastag_check.py`` decides
+    what that means.
+    """
+    if backend not in FASTAG_OCR_BACKENDS:
+        raise ValueError(f"unknown FASTag OCR backend: {backend!r} (expected one of {FASTAG_OCR_BACKENDS})")
+
+    decoded = decode_codes(image)
+
+    if backend == "rekognition":
+        printed_id_text = _read_printed_id_rekognition(image, reader)
+    else:  # "claude" | "gemini"
+        printed_id_text = _read_printed_id_vlm(image, vlm_model, provider=backend)
+
+    return FastagRead(decoded_codes=decoded, printed_id_text=printed_id_text)

@@ -37,6 +37,10 @@ def main() -> None:
     ap.add_argument("--axle-count", type=int, help="Claimed axle count (required for --type side).")
     ap.add_argument("--front-reference", help="Path to this truck's on-file front photo "
                                                "(optional for --type side, corner_view bucket only).")
+    ap.add_argument("--backend", help="Model backend override — printed-digit OCR backend for "
+                                       "--type fastag ('rekognition'|'claude'|'gemini'), or the "
+                                       "axle-count model backend for --type side ('claude'|'gemini'). "
+                                       "Defaults to config.py's FASTAG_OCR_BACKEND/AXLE_COUNT_BACKEND.")
     args = ap.parse_args()
 
     if args.type == "vrn":
@@ -59,13 +63,16 @@ def main() -> None:
     elif args.type == "fastag":
         if not args.fastag_id:
             ap.error("--fastag-id is required for --type fastag")
-        result = check_fastag_upload(args.image, args.fastag_id, args.bank_code)
+        fastag_kwargs = {"backend": args.backend} if args.backend else {}
+        result = check_fastag_upload(args.image, args.fastag_id, args.bank_code, **fastag_kwargs)
     elif args.type == "side":
         if not args.vrn or not args.make or args.axle_count is None:
             ap.error("--vrn, --make, and --axle-count are required for --type side")
         upload_id = args.upload_id or os.path.basename(args.image)
+        side_kwargs = {"axle_backend": args.backend} if args.backend else {}
         result = check_side_image_upload(args.image, args.vrn, args.make, args.axle_count,
-                                          upload_id=upload_id, front_reference_image=args.front_reference)
+                                          upload_id=upload_id, front_reference_image=args.front_reference,
+                                          **side_kwargs)
     else:
         result = VALIDATORS[args.type](args.image)
 

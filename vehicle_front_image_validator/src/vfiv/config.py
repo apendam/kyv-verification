@@ -100,11 +100,18 @@ DUPLICATE_SIMILARITY_MIN = float(os.environ.get("VFIV_DUPLICATE_SIMILARITY_MIN",
 # ever the last-resort match arm: the QR/barcode decodes are exact and checked first.
 FASTAG_OCR_MAX_CONFUSABLE_EDITS = 1
 
+# Which model reads the printed digits -- "rekognition" (default) | "claude" | "gemini".
+# The barcode/QR decode itself is a deterministic algorithm either way, not a model
+# call, so this only affects the OCR fallback arm. See backends/fastag_reader.py.
+FASTAG_OCR_BACKEND = os.environ.get("VFIV_FASTAG_OCR_BACKEND", "rekognition")
+
 # --- Side/axle-image validator (validators/side_image_check.py) ----------------
 # No dedicated axle/wheel detector is wired (would need a custom-trained model and
-# a labeled dataset) -- axle count is a narrowed Claude VLM judgment call instead,
-# gated by its own reported confidence.
+# a labeled dataset) -- axle count is a narrowed VLM judgment call instead, gated by
+# its own reported confidence. Which model reads it is selectable -- "claude"
+# (default) | "gemini" -- same prompt either way; see side_image_check.py.
 AXLE_COUNT_CONF_MIN = float(os.environ.get("VFIV_AXLE_COUNT_CONF_MIN", "70.0"))
+AXLE_COUNT_BACKEND = os.environ.get("VFIV_AXLE_COUNT_BACKEND", "claude")
 
 # Cosine-similarity floor for "this corner-shot's vehicle crop looks like the same
 # truck as the claimed vehicle's on-file front photo". UNCALIBRATED -- a general

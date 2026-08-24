@@ -1,4 +1,6 @@
-from vfiv.validators.side_image_check import _worst_decision, decide_axle_count
+import pytest
+
+from vfiv.validators.side_image_check import _worst_decision, classify_axle_count, decide_axle_count
 
 
 def test_worst_decision_picks_reject_over_anything():
@@ -41,3 +43,11 @@ def test_lift_axle_suspected_still_passes_but_notes_it():
     result = decide_axle_count(_axle_read(3, lift=True), claimed_axle_count=3)
     assert result["decision"] == "PASS"
     assert "lift axle" in result["reason"]
+
+
+def test_unknown_axle_backend_raises_before_any_image_io():
+    """The if/elif/else dispatch means an unknown backend never reaches
+    call_vlm_json/call_gemini_json -- raises immediately, even for a path that
+    doesn't exist."""
+    with pytest.raises(ValueError, match="unknown axle-count backend"):
+        classify_axle_count("does-not-exist.jpg", backend="not-a-real-backend")
