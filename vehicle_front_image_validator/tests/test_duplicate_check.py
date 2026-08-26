@@ -91,6 +91,24 @@ def test_manual_review_when_pgvector_not_configured(monkeypatch):
     assert result.is_duplicate_suspect is False
 
 
+def test_manual_review_when_embedding_model_not_installed(monkeypatch):
+    """A venv missing torch/transformers (SigLIP's real dependencies) must not
+    crash the UI with a raw ImportError -- it should degrade the same way a
+    missing pgvector DSN does."""
+    import vfiv.validators.duplicate_check as duplicate_check_module
+
+    class _FakeSiglip:
+        def embed_image(self, image):
+            raise ImportError("No module named 'torch'")
+
+    monkeypatch.setattr(duplicate_check_module, "get_siglip_model", lambda: _FakeSiglip())
+
+    result = check_duplicate("does-not-matter.jpg", upload_id="img_x", claimed_vrn="UP42T4069")
+    assert result.checked is False
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.is_duplicate_suspect is False
+
+
 def test_image_type_defaults_to_front_and_is_passed_through(monkeypatch):
     """The image_type argument must reach find_similar/store_embedding unchanged
     -- this is what keeps front/side/fastag from ever being compared against

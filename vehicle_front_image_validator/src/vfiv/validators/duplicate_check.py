@@ -99,7 +99,7 @@ def check_duplicate(
     try:
         embedding = get_siglip_model().embed_image(image)
         matches = find_similar(embedding, image_type=image_type, top_k=top_k)
-    except DuplicateStoreError as e:
+    except (DuplicateStoreError, ImportError) as e:
         return DuplicateCheckResult(
             decision="MANUAL_REVIEW",
             checked=False,
