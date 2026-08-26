@@ -13,6 +13,7 @@ backends. Run with:
 from __future__ import annotations
 
 import io
+import uuid
 
 import gradio as gr
 import pandas as pd
@@ -201,6 +202,13 @@ def _clean_optional(value) -> str | None:
     return value or None
 
 
+def _upload_id_or_random(value) -> str:
+    """An explicit ``upload_id`` (if the user gave one, e.g. a real DB row id worth
+    tracing later) always wins; otherwise a fresh random one, so the duplicate check
+    still runs and stores without making the user think up an id for a one-off test."""
+    return _clean_optional(value) or f"webapp-{uuid.uuid4().hex}"
+
+
 def _require_columns(df: pd.DataFrame, required: set[str], all_columns_hint: str) -> None:
     missing = required - set(df.columns)
     if missing:
@@ -244,16 +252,17 @@ def _run_bulk_generic(csv_path, row_fn, extra_out_cols: list[str], required_cols
 def run_q1_individual(image, q1_backend, q1_gemini_model, claimed_vrn=None, upload_id=None):
     if image is None:
         return "### Upload an image first.", {}
-    result = run_q1_only(image, q1_backend, q1_gemini_model,
-                         claimed_vrn=_clean_optional(claimed_vrn), upload_id=_clean_optional(upload_id))
+    claimed_vrn = _clean_optional(claimed_vrn)
+    result = run_q1_only(image, q1_backend, q1_gemini_model, claimed_vrn=claimed_vrn,
+                         upload_id=_upload_id_or_random(upload_id) if claimed_vrn else None)
     return _banner(result.decision, result.reason), result.model_dump()
 
 
 def run_q1_bulk(csv_path, q1_backend, q1_gemini_model, progress=gr.Progress()):
     def row_fn(image, row):
-        r = run_q1_only(image, q1_backend, q1_gemini_model,
-                        claimed_vrn=_clean_optional(row.get("truck_number")),
-                        upload_id=_clean_optional(row.get("upload_id")))
+        claimed_vrn = _clean_optional(row.get("truck_number"))
+        r = run_q1_only(image, q1_backend, q1_gemini_model, claimed_vrn=claimed_vrn,
+                        upload_id=_upload_id_or_random(row.get("upload_id")) if claimed_vrn else None)
         return {"decision": r.decision, "reason": r.reason, "vehicle_type": r.vehicle_type,
                "view": r.view, "is_front": r.is_front, "front_complete": r.front_complete,
                "confidence": r.confidence, "duplicate_is_suspect": r.duplicate_is_suspect}
@@ -394,7 +403,7 @@ def run_side_individual(image, truck_number, make, axle_count, upload_id, front_
         return "### Truck number, make, and axle count are all required.", {}
     result = check_side_image_upload(
         image, truck_number, make, int(axle_count),
-        upload_id=upload_id or None, front_reference_image=front_reference,
+        upload_id=_upload_id_or_random(upload_id), front_reference_image=front_reference,
         axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
     )
     return _banner(result.decision, result.reason), result.model_dump()
@@ -408,7 +417,7 @@ def run_side_bulk(csv_path, axle_backend, gemini_model, progress=gr.Progress()):
             front_ref = _fetch_image(front_ref_url)
         r = check_side_image_upload(
             image, str(row["truck_number"]), str(row["make"]), int(row["axle_count"]),
-            upload_id=_clean_optional(row.get("upload_id")), front_reference_image=front_ref,
+            upload_id=_upload_id_or_random(row.get("upload_id")), front_reference_image=front_ref,
             axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
         )
         return {"truck_number": row["truck_number"], "make": row["make"], "decision": r.decision,
@@ -506,12 +515,12 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
                         with gr.Column():
                             q1_image_in = gr.Image(type="pil", label="Upload image")
                             q1_vrn_in = gr.Textbox(
-                                label="Truck number / VRN (optional — required together with "
-                                      "Upload id below to also run the duplicate check)")
+                                label="Truck number / VRN (optional — fill in to also run the "
+                                      "duplicate check against the 'front' reference library; "
+                                      "leave blank to skip it)")
                             q1_upload_id_in = gr.Textbox(
-                                label="Upload id (optional — fill in together with the VRN above "
-                                      "to check/store this photo against the 'front' reference "
-                                      "library; leave both blank to skip the duplicate check)")
+                                label="Upload id (optional — auto-generated if left blank; only "
+                                      "needed if you want this stored under a specific id)")
                             q1_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             q1_decision_out = gr.Markdown()
@@ -523,8 +532,8 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
 
                 with gr.Tab("Bulk (CSV)"):
                     gr.Markdown("CSV columns: `image_url`, `truck_number` (optional), `upload_id` "
-                               "(optional). Fill in both `truck_number` and `upload_id` on a row "
-                               "to also run the duplicate check for that row.")
+                               "(optional). Fill in `truck_number` on a row to also run the "
+                               "duplicate check for it — `upload_id` is auto-generated if left blank.")
                     q1_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
                     q1_bulk_btn = gr.Button("Run bulk test", variant="primary")
                     q1_table_out = gr.Dataframe(label="Results")
@@ -693,7 +702,8 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
                             side_make_in = gr.Textbox(label="Claimed make")
                             side_axle_in = gr.Number(label="Claimed axle count", precision=0)
                             side_upload_id_in = gr.Textbox(
-                                label="Upload id (optional — leave blank to skip the duplicate check)")
+                                label="Upload id (optional — auto-generated if left blank; the "
+                                      "duplicate check always runs)")
                             side_front_ref_in = gr.Image(
                                 type="pil", label="On-file front photo (optional, corner_view bucket only)")
                             side_run_btn = gr.Button("Run", variant="primary")

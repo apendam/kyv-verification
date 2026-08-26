@@ -333,22 +333,22 @@ result = check_duplicate(image, upload_id="upload_123", claimed_vrn="UP42T4069",
 result.is_duplicate_suspect, result.best_match_id, result.best_match_similarity, result.best_match_vrn
 ```
 
-**Where `upload_id` comes from and why it gates the check**: `upload_id` is
-never parsed or interpreted — it's a stable identifier for the row being
-stored (in production, the real upload/submission id from your own system),
-kept purely so a future match can be traced back to *which* prior upload it's
-a near-duplicate of (`best_match_id` in the result IS this value), and so
-storage is idempotent (re-running the same `upload_id` upserts that row
-instead of accumulating duplicates of itself). Both `side_image_check.py` and
-Q1's test/webapp path (`run_q1_only`, below) treat the duplicate check as
-**opt-in**: it only runs when a real `upload_id` (and, for Q1, a claimed VRN
-too — needed to tell an honest re-upload from a swapped-plate fraud lead)
-is supplied. Leave both blank in the webapp to skip it entirely — no error,
-just no duplicate check for that test.
+**What `upload_id` is for**: never parsed or interpreted — it's a stable
+identifier for the row being stored (in production, the real upload/
+submission id from your own system), kept purely so a future match can be
+traced back to *which* prior upload it's a near-duplicate of (`best_match_id`
+in the result IS this value), and so storage is idempotent (re-running the
+same `upload_id` upserts that row instead of accumulating duplicates of
+itself). A real claimed VRN is still required to run the check at all (it's
+what tells an honest re-upload apart from a swapped-plate fraud lead) — but
+the webapp never requires `upload_id` itself: leave it blank and it
+auto-generates a random one (`webapp-<uuid4 hex>`) so the check still runs
+and stores; only fill it in if you specifically want this stored under an id
+of your choosing.
 
 **Q1 (front-image gate)** — `run_q1_only()` (`experiments/runner.py`, also
 what the webapp's **Q1** tab calls) accepts the same optional `claimed_vrn` +
-`upload_id` pair: give both to also run `check_duplicate(..., image_type="front")`
+`upload_id` pair: give a VRN to also run `check_duplicate(..., image_type="front")`
 and fold its verdict into Q1's own decision (worst-of, same REJECT >
 MANUAL_REVIEW > PASS ordering as everywhere else); a suspected duplicate
 surfaces as `duplicate_is_suspect=True` on the result. Wired at the
@@ -448,9 +448,10 @@ labeled pairs before trusting it. The `pure_side_profile` bucket is the genuinel
 open problem flagged in design discussion, not solved here — a make/model match
 from that bucket alone is capped at `MANUAL_REVIEW`.
 
-Duplicate detection reuses `check_duplicate()` unchanged, only if `upload_id` is
-passed — scoped to the `"side"` `image_type`, so it's never compared against
-front or FASTag embeddings (see the `image_type` scoping above).
+Duplicate detection reuses `check_duplicate()` unchanged, always run (the
+webapp auto-generates an `upload_id` when none is given) — scoped to the
+`"side"` `image_type`, so it's never compared against front or FASTag
+embeddings (see the `image_type` scoping above).
 
 ```bash
 python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3
