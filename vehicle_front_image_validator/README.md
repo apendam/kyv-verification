@@ -153,6 +153,25 @@ python -m vfiv.webapp   # → http://127.0.0.1:7860
   pick a backend per stage, run.
 - **Bulk test** — upload a CSV (`image_url, truck_number, make, model`), same backend
   pickers, runs every row and gives a results table + downloadable CSV.
+- **Top-level layout** — grouped by which physical photo the checks run against, not
+  by check name, since that's the natural mental model for someone testing an upload
+  ("does this front photo pass?" not "does Q1 pass?"):
+  - **Front Image** — Q1 (front-image gate) / Q2 (VRN + colour) / Q3 (make + model) /
+    end-to-end, all sub-tabs testing the same uploaded front photo.
+  - **Side/Axle Image** — broken into check-based buckets: **Axle count** (isolated
+    `check_axle_count`), **Identity binding** (isolated `check_side_identity`, routed
+    into vrn_visible/corner_view/pure_side_profile), **Duplicate check** (scoped to the
+    `"side"` corpus), and **End-to-end** (the combined `check_side_image_upload`, worst
+    of all three). The first three are independently unit-testable — see
+    `validators/side_image_check.py`.
+  - **FASTag** — **QR / Barcode read** and **Printed digits (OCR)** show the raw
+    decode/read only, with no pass/fail of their own: the actual fraud-check
+    (`decide_fastag`) needs all three sources together to judge cross-source
+    consistency, so an isolated bucket that fabricated a partial verdict would be
+    misleading. **End-to-end** (`check_fastag_upload`) is the only sub-tab that
+    actually decides PASS/REJECT/MANUAL_REVIEW.
+  - **Reference Images** — stays a separate top-level tab (see "Duplicate detection"
+    below) since it manages the corpus itself, not a check against one upload.
 - **Backend choices per stage** (`experiments/q1_select.py` / `q2_select.py` / `q3_select.py`):
   - **Q1**: `real_cv` (production default) | `claude` (the original all-Claude Q1,
     reconstructed) | `gemini`

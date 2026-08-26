@@ -1,6 +1,12 @@
 import pytest
 
-from vfiv.validators.side_image_check import _worst_decision, classify_axle_count, decide_axle_count
+from vfiv.validators.side_image_check import (
+    _worst_decision,
+    check_axle_count,
+    check_side_identity,
+    classify_axle_count,
+    decide_axle_count,
+)
 
 
 def test_worst_decision_picks_reject_over_anything():
@@ -51,3 +57,51 @@ def test_unknown_axle_backend_raises_before_any_image_io():
     doesn't exist."""
     with pytest.raises(ValueError, match="unknown axle-count backend"):
         classify_axle_count("does-not-exist.jpg", backend="not-a-real-backend")
+
+
+def test_check_axle_count_wraps_classify_and_decide(monkeypatch):
+    """check_axle_count is the standalone (webapp bucket) entry point -- must
+    return the same decision classify+decide would, packaged as AxleCountResult."""
+    import vfiv.validators.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "classify_axle_count",
+                        lambda image, backend, model=None: _axle_read(3))
+
+    result = check_axle_count("does-not-matter.jpg", claimed_axle_count=3)
+    assert result.decision == "PASS"
+    assert result.status == "MATCH"
+    assert result.checked is True
+    assert result.axle_count == 3
+
+
+def test_check_axle_count_degrades_on_classify_exception(monkeypatch):
+    """A raised exception (e.g. an unknown/misconfigured backend) must degrade to
+    MANUAL_REVIEW, not crash the caller -- same posture as the rest of the module."""
+    import vfiv.validators.side_image_check as side_module
+
+    def _boom(image, backend, model=None):
+        raise ValueError("unknown axle-count backend: 'bogus'")
+
+    monkeypatch.setattr(side_module, "classify_axle_count", _boom)
+
+    result = check_axle_count("does-not-matter.jpg", claimed_axle_count=3, backend="bogus")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "unknown axle-count backend" in result.reason
+
+
+def test_check_side_identity_routes_to_vrn_visible_bucket(monkeypatch):
+    """When the type-classifier says vrn_visible, check_side_identity must dispatch
+    to the VRN-based identity check, not the corner/pure-side-profile arms."""
+    import vfiv.validators.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
+    monkeypatch.setattr(side_module, "get_side_image_type_classifier",
+                        lambda: type("_C", (), {"predict": lambda self, arr: {"bucket": "vrn_visible"}})())
+    monkeypatch.setattr(side_module, "_identity_via_vrn",
+                        lambda image, claimed_vrn: ("PASS", "[vrn_visible] matched", {"bucket": "vrn_visible"}))
+
+    result = check_side_identity("does-not-matter.jpg", claimed_vrn="UP42T4069", claimed_make="TATA MOTORS LTD")
+    assert result.decision == "PASS"
+    assert result.identity_bucket == "vrn_visible"
+    assert result.checked is True

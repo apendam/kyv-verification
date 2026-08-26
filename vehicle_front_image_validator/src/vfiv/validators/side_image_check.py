@@ -56,7 +56,7 @@ from vfiv import config
 from vfiv.backends.image_io import load_rgb_array
 from vfiv.backends.siglip import get_make_classifier, get_side_image_type_classifier, get_siglip_model
 from vfiv.backends.vehicle import get_vehicle_detector
-from vfiv.schemas import SideImageCheckResult
+from vfiv.schemas import AxleCountResult, SideImageCheckResult, SideImageIdentityResult
 from vfiv.validators.base import call_vlm_json
 from vfiv.validators.duplicate_check import check_duplicate
 from vfiv.validators.vrn_check import validate_vrn
@@ -193,6 +193,76 @@ def _identity_via_pure_side_profile(image, claimed_make: str) -> tuple[str, str,
              "isn't verifiable from a bare side profile alone — human check"), detail)
 
 
+def check_axle_count(
+    image,
+    claimed_axle_count: int,
+    backend: str = config.AXLE_COUNT_BACKEND,
+    model: str | None = None,
+    conf_min: float = config.AXLE_COUNT_CONF_MIN,
+) -> AxleCountResult:
+    """Axle-count in isolation — classify then decide (see module docstring for why
+    no dedicated detector is wired). Reused by ``check_side_image_upload``; exposed
+    standalone so it's independently testable from identity-binding/duplicate."""
+    try:
+        raw = classify_axle_count(image, backend=backend, model=model)
+    except Exception as e:
+        return AxleCountResult(
+            decision="MANUAL_REVIEW", checked=False, claimed_axle_count=claimed_axle_count,
+            reason=f"axle check unavailable ({e})", error=str(e),
+        )
+    if not raw.get("checked"):
+        return AxleCountResult(
+            decision="MANUAL_REVIEW", checked=False, claimed_axle_count=claimed_axle_count,
+            reason=f"axle check unavailable ({raw.get('error', '?')})", error=raw.get("error"),
+        )
+    decided = decide_axle_count(raw, claimed_axle_count, conf_min)
+    return AxleCountResult(
+        decision=decided["decision"], status=decided["status"], checked=True,
+        claimed_axle_count=claimed_axle_count, axle_count=raw.get("axle_count"),
+        axle_confidence=raw.get("axle_confidence"), lift_axle_suspected=raw.get("lift_axle_suspected"),
+        reason=decided["reason"],
+    )
+
+
+def check_side_identity(
+    image,
+    claimed_vrn: str,
+    claimed_make: str,
+    front_reference_image=None,
+    similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
+) -> SideImageIdentityResult:
+    """Identity-binding in isolation — routed by ``SideImageTypeClassifier`` into
+    vrn_visible / corner_view / pure_side_profile (see module docstring). Reused by
+    ``check_side_image_upload``; exposed standalone so it's independently testable
+    from axle-count/duplicate.
+
+    ``front_reference_image`` is this truck's own already-accepted front photo,
+    used by the corner-view bucket's embedding-similarity arm; without it, that
+    bucket falls back to make/model-only (same ceiling as the pure-side-profile
+    bucket)."""
+    try:
+        arr = load_rgb_array(image)
+        bucket = get_side_image_type_classifier().predict(arr)["bucket"]
+        if bucket == "vrn_visible":
+            decision, reason, detail = _identity_via_vrn(image, claimed_vrn)
+        elif bucket == "corner_view":
+            decision, reason, detail = _identity_via_corner_view(
+                image, claimed_make, front_reference_image, similarity_min)
+        else:
+            decision, reason, detail = _identity_via_pure_side_profile(image, claimed_make)
+    except Exception as e:
+        return SideImageIdentityResult(
+            decision="MANUAL_REVIEW", checked=False, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
+            reason=f"identity check unavailable ({e})", error=str(e),
+        )
+    return SideImageIdentityResult(
+        decision=decision, checked=True, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
+        identity_bucket=detail.get("bucket"), make_read=detail.get("make_read"),
+        make_matched=detail.get("make_matched"), front_similarity=detail.get("front_similarity"),
+        vrn_status=detail.get("vrn_status"), reason=reason,
+    )
+
+
 def check_side_image_upload(
     image,
     claimed_vrn: str,
@@ -206,41 +276,19 @@ def check_side_image_upload(
     axle_model: str | None = None,
 ) -> SideImageCheckResult:
     """The single entry point for a side/axle-image upload. Runs duplicate check
-    (if ``upload_id`` given), axle count, and identity-binding (routed by
-    ``SideImageTypeClassifier``), then takes the worst decision across whichever
-    checks ran — see module docstring for the full breakdown.
-
-    ``front_reference_image`` is this truck's own already-accepted front photo,
-    used by the corner-view bucket's embedding-similarity arm; without it, that
-    bucket falls back to make/model-only (same ceiling as the pure-side-profile
-    bucket).
+    (if ``upload_id`` given), axle count (``check_axle_count``), and identity-
+    binding (``check_side_identity``), then takes the worst decision across
+    whichever checks ran — see module docstring for the full breakdown.
 
     ``axle_backend`` — "claude" (default) | "gemini" — selects which model reads
     the axle count; the identity/duplicate checks are unaffected by this.
     """
     try:
-        arr = load_rgb_array(image)
-
         dup = check_duplicate(image, upload_id, claimed_vrn, image_type="side") if upload_id else None
-
-        axle_raw = classify_axle_count(image, backend=axle_backend, model=axle_model)
-        if axle_raw.get("checked"):
-            axle = decide_axle_count(axle_raw, claimed_axle_count, axle_conf_min)
-        else:
-            axle = {"status": "UNREADABLE", "decision": "MANUAL_REVIEW",
-                    "reason": f"axle check unavailable ({axle_raw.get('error', '?')})"}
-
-        bucket_probs = get_side_image_type_classifier().predict(arr)
-        bucket = bucket_probs["bucket"]
-
-        if bucket == "vrn_visible":
-            identity_decision, identity_reason, identity_detail = _identity_via_vrn(image, claimed_vrn)
-        elif bucket == "corner_view":
-            identity_decision, identity_reason, identity_detail = _identity_via_corner_view(
-                image, claimed_make, front_reference_image, side_image_similarity_min)
-        else:
-            identity_decision, identity_reason, identity_detail = _identity_via_pure_side_profile(
-                image, claimed_make)
+        axle = check_axle_count(image, claimed_axle_count, backend=axle_backend,
+                                model=axle_model, conf_min=axle_conf_min)
+        identity = check_side_identity(image, claimed_vrn, claimed_make,
+                                       front_reference_image, side_image_similarity_min)
     except Exception as e:
         return SideImageCheckResult(
             decision="MANUAL_REVIEW", checked=False,
@@ -248,12 +296,12 @@ def check_side_image_upload(
             reason=f"side-image check unavailable ({e})", error=str(e),
         )
 
-    decisions = [axle["decision"], identity_decision]
+    decisions = [axle.decision, identity.decision]
     if dup is not None:
         decisions.append(dup.decision)
     overall = _worst_decision(*decisions)
 
-    reason_parts = [f"axle: {axle['reason']}", f"identity: {identity_reason}"]
+    reason_parts = [f"axle: {axle.reason}", f"identity: {identity.reason}"]
     if dup is not None:
         reason_parts.append(f"duplicate: {dup.reason}")
 
@@ -264,9 +312,9 @@ def check_side_image_upload(
         claimed_vrn=claimed_vrn,
         claimed_make=claimed_make,
         claimed_axle_count=claimed_axle_count,
-        axle_count=axle_raw.get("axle_count"),
-        axle_status=axle.get("status"),
-        identity_bucket=identity_detail.get("bucket"),
-        identity_decision=identity_decision,
+        axle_count=axle.axle_count,
+        axle_status=axle.status,
+        identity_bucket=identity.identity_bucket,
+        identity_decision=identity.decision,
         duplicate_is_suspect=dup.is_duplicate_suspect if dup is not None else None,
     )

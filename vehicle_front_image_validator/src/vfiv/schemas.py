@@ -100,6 +100,41 @@ class FastagCheckResult(BaseModel):
     error: Optional[str] = None
 
 
+class AxleCountResult(BaseModel):
+    """Just the axle-count piece of ``SideImageCheckResult`` — same VLM judgment
+    call (``classify_axle_count``/``decide_axle_count``), exposed standalone so it
+    can be tested in isolation from identity-binding/duplicate. See
+    ``validators/side_image_check.py``."""
+    decision: Decision
+    status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
+    checked: bool
+    claimed_axle_count: int
+    axle_count: Optional[int] = None
+    axle_confidence: Optional[float] = None  # 0..100
+    lift_axle_suspected: Optional[bool] = None
+    reason: str
+    error: Optional[str] = None
+
+
+class SideImageIdentityResult(BaseModel):
+    """Just the identity-binding piece of ``SideImageCheckResult`` — routed by
+    ``SideImageTypeClassifier`` into vrn_visible / corner_view / pure_side_profile
+    (decreasing reliability, see the module docstring), exposed standalone so it
+    can be tested independent of axle-count/duplicate. See
+    ``validators/side_image_check.py``."""
+    decision: Decision
+    checked: bool
+    claimed_vrn: str
+    claimed_make: str
+    identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
+    make_read: Optional[str] = None
+    make_matched: Optional[bool] = None
+    front_similarity: Optional[float] = None  # 0..1, corner_view bucket only
+    vrn_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE, vrn_visible bucket only
+    reason: str
+    error: Optional[str] = None
+
+
 class SideImageCheckResult(BaseModel):
     """Side/axle-image validator — axle count (Claude judgment call, no dedicated
     detector wired) + identity-to-claimed-vehicle, routed by

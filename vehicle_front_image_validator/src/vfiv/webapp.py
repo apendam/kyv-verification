@@ -21,13 +21,18 @@ import requests
 from PIL import Image
 
 from vfiv import config
-from vfiv.backends.fastag_reader import FASTAG_OCR_BACKENDS
+from vfiv.backends.fastag_reader import FASTAG_OCR_BACKENDS, parse_qr_payload
 from vfiv.backends.vector_store import DuplicateStoreError, count_by_type
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.runner import run_q1_only, run_q2_only, run_q3_only, run_test_case
 from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.fastag_check import check_fastag_upload
-from vfiv.validators.side_image_check import AXLE_COUNT_BACKENDS, check_side_image_upload
+from vfiv.validators.fastag_check import check_fastag_upload, classify_fastag_upload
+from vfiv.validators.side_image_check import (
+    AXLE_COUNT_BACKENDS,
+    check_axle_count,
+    check_side_identity,
+    check_side_image_upload,
+)
 
 Q1_CHOICES = q1_select.Q1_BACKENDS
 Q2_CHOICES = q2_select.Q2_BACKENDS
@@ -38,155 +43,161 @@ Q3_MODEL_CHOICES = q3_select.Q3_MODEL_BACKENDS
 # future model id), so this list is a convenience, not an exhaustive whitelist.
 GEMINI_MODEL_CHOICES = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
 
-# Brand tokens pulled from blackbuck.com's own compiled Webflow CSS (its :root custom
-# properties and most-used hex values) — dark-first UI, a signature turquoise accent,
-# a bold display face for headings over a clean geometric sans for everything else.
-# The exact brand fonts (Drukwide / Generalsans) are commercial and not embedded here;
-# Archivo Black / Inter are free stand-ins with a similar weight and character.
-_BB_TURQUOISE = "#0dcbc2"
-_BB_CRIMSON = "#d71e48"
-_BB_YELLOW = "#ffc130"
+# Plain, document-style theme — modeled on how a Blackbuck PRD actually reads (see
+# blackbuckPrdBuilder's references/style/tone-and-conventions.md): a plain white page,
+# black text, restrained bold/colour used only "for the exact state a system ends up
+# in" (their words, re: bolding a decision like **Tag Hotlisted**), tables for
+# structure rather than decoration, and no brand chrome — this is a working document,
+# not a marketing surface. System font stack, not a loaded display face, for the same
+# reason: keep it plain.
+_DOC_GREEN = "#1a7f37"
+_DOC_RED = "#b42318"
+_DOC_AMBER = "#9a6700"
 
 _DECISION_STYLE = {
-    "PASS": (_BB_TURQUOISE, "#000"),
-    "REJECT": (_BB_CRIMSON, "#fff"),
-    "MANUAL_REVIEW": (_BB_YELLOW, "#000"),
+    "PASS": _DOC_GREEN,
+    "REJECT": _DOC_RED,
+    "MANUAL_REVIEW": _DOC_AMBER,
 }
 
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&display=swap');
-
 :root {
-    --bb-black: #0a0a0a;
-    --bb-panel: #151515;
-    --bb-panel-2: #1e1e1e;
-    --bb-white: #ffffff;
-    --bb-muted: #a8a8a8;
-    --bb-turquoise: #0dcbc2;
-    --bb-turquoise-dark: #0b8e88;
-    --bb-border: #2a2a2a;
+    --doc-bg: #ffffff;
+    --doc-surface: #f6f6f6;
+    --doc-text: #1a1a1a;
+    --doc-muted: #5f5f5f;
+    --doc-border: #d0d0d0;
 }
 
 .gradio-container {
-    background: var(--bb-black) !important;
-    color: var(--bb-white) !important;
-    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif !important;
+    background: var(--doc-bg) !important;
+    color: var(--doc-text) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
 }
 
 .gradio-container h1, .gradio-container h2, .gradio-container h3 {
-    font-family: 'Archivo Black', 'Inter', sans-serif !important;
-    letter-spacing: -0.01em;
-    color: var(--bb-white) !important;
+    font-family: inherit !important;
+    font-weight: 700 !important;
+    letter-spacing: normal !important;
+    color: var(--doc-text) !important;
 }
 
 .gradio-container .prose, .gradio-container p, .gradio-container span, .gradio-container label {
-    color: var(--bb-white) !important;
+    color: var(--doc-text) !important;
 }
 
-/* Gradio's markdown typography gives <strong>/<code> their own explicit (dark) colour
-   that plain inheritance from .prose doesn't override -- target them directly. */
 .gradio-container .prose strong {
-    color: var(--bb-white) !important;
+    color: var(--doc-text) !important;
 }
 .gradio-container .prose code {
-    color: var(--bb-turquoise) !important;
-    background: var(--bb-panel-2) !important;
+    color: var(--doc-text) !important;
+    background: var(--doc-surface) !important;
+    border: 1px solid var(--doc-border) !important;
+    border-radius: 3px !important;
 }
 
 .gradio-container .block, .gradio-container .form {
-    background: var(--bb-panel) !important;
-    border: 1px solid var(--bb-border) !important;
-    border-radius: 14px !important;
+    background: var(--doc-surface) !important;
+    border: 1px solid var(--doc-border) !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
 }
 
 /* The small label caption Gradio renders above a component (e.g. "Upload image",
    "Full result") ships with its own light background, under either a ".float" class
    (image/file-type inputs) or a "block-label" test-id (JSON/dataframe/etc. outputs) --
-   without this override both render as an unreadable white-on-white bar once the text
-   colour above is forced to white. */
+   spelled out explicitly rather than left to inheritance, same reasoning as before. */
 .gradio-container label.float, .gradio-container .float,
 .gradio-container [data-testid="block-label"] {
-    background: var(--bb-panel-2) !important;
-    color: var(--bb-white) !important;
+    background: var(--doc-surface) !important;
+    color: var(--doc-muted) !important;
 }
 
 /* Tab bars -- targeted by the ARIA role (stable across Gradio versions) rather than
    Gradio's internal class names, which changed between major versions. */
 .gradio-container button[role="tab"] {
-    color: var(--bb-muted) !important;
-    font-weight: 600 !important;
+    color: var(--doc-muted) !important;
+    font-weight: 500 !important;
 }
 .gradio-container button[role="tab"].selected {
-    color: var(--bb-turquoise) !important;
-    border-bottom: 2px solid var(--bb-turquoise) !important;
+    color: var(--doc-text) !important;
+    border-bottom: 2px solid var(--doc-text) !important;
+}
+/* The selected-tab underline is actually drawn by an ::after bar (Tailwind blue-500
+   hardcoded, not theme-driven), layered on top of the border-bottom above -- override
+   it directly rather than relying on the border alone. */
+.gradio-container button[role="tab"]::after {
+    background: var(--doc-text) !important;
 }
 
 .gradio-container input, .gradio-container textarea, .gradio-container select {
-    background: var(--bb-panel-2) !important;
-    color: var(--bb-white) !important;
-    border: 1px solid var(--bb-border) !important;
-    border-radius: 10px !important;
+    background: var(--doc-bg) !important;
+    color: var(--doc-text) !important;
+    border: 1px solid var(--doc-border) !important;
+    border-radius: 4px !important;
 }
 
 /* Dropdown popover -- Gradio builds this as a plain <ul class="options"><li
    class="item"> list, not a native <select>, so the input/textarea/select rule
    above never reaches it; it renders with the browser's default light background
-   otherwise. */
+   otherwise (harmless now that the rest of the page is also light, but kept
+   explicit so hover/selected states stay legible). */
 .gradio-container ul.options {
-    background: var(--bb-panel-2) !important;
-    border: 1px solid var(--bb-border) !important;
+    background: var(--doc-bg) !important;
+    border: 1px solid var(--doc-border) !important;
 }
 .gradio-container ul.options li.item {
-    color: var(--bb-white) !important;
-    background: var(--bb-panel-2) !important;
+    color: var(--doc-text) !important;
+    background: var(--doc-bg) !important;
 }
-/* The currently-selected option ships a literal Tailwind bg-gray-100 utility class
-   (a hardcoded light colour, not theme-driven) that otherwise wins over the rule
-   above -- override it explicitly rather than relying on cascade order. */
 .gradio-container ul.options li.item.selected,
 .gradio-container ul.options li.item.active {
-    background: var(--bb-panel-2) !important;
-    color: var(--bb-white) !important;
+    background: var(--doc-surface) !important;
+    color: var(--doc-text) !important;
 }
 .gradio-container ul.options li.item:hover {
-    background: var(--bb-turquoise) !important;
-    color: #000 !important;
+    background: #eaeaea !important;
+    color: var(--doc-text) !important;
 }
 
 .gradio-container button.primary {
-    background: var(--bb-turquoise) !important;
-    color: #000 !important;
+    background: var(--doc-text) !important;
+    color: #ffffff !important;
     border: none !important;
-    border-radius: 999px !important;
-    font-weight: 700 !important;
+    border-radius: 4px !important;
+    font-weight: 500 !important;
 }
 .gradio-container button.primary:hover {
-    background: var(--bb-turquoise-dark) !important;
-    color: #fff !important;
+    background: #3a3a3a !important;
 }
 
 /* Results Dataframe -- renders its own <table> with a light default background,
    independent of the .block/.form panel styling above. */
 .gradio-container table, .gradio-container th, .gradio-container td {
-    background: var(--bb-panel) !important;
-    color: var(--bb-white) !important;
-    border-color: var(--bb-border) !important;
+    background: var(--doc-bg) !important;
+    color: var(--doc-text) !important;
+    border-color: var(--doc-border) !important;
+}
+.gradio-container th {
+    background: var(--doc-surface) !important;
+    font-weight: 700 !important;
 }
 
 .gradio-container button.secondary {
-    background: transparent !important;
-    color: var(--bb-white) !important;
-    border: 1px solid var(--bb-border) !important;
-    border-radius: 999px !important;
+    background: var(--doc-bg) !important;
+    color: var(--doc-text) !important;
+    border: 1px solid var(--doc-border) !important;
+    border-radius: 4px !important;
 }
 """
 
 
 def _banner(decision: str, reason: str) -> str:
-    bg, fg = _DECISION_STYLE.get(decision, ("#333", "#fff"))
-    badge = (f'<span style="background:{bg};color:{fg};padding:0.35em 0.9em;'
-             f'border-radius:999px;font-weight:700;letter-spacing:0.02em;">{decision}</span>')
-    return f"### {badge}\n\n{reason}"
+    """Bold, restrained-colour text for the decision -- no pill/badge chrome, same
+    "bold only for the exact state a system ends up in" convention a PRD itself
+    follows, not a marketing-style status chip."""
+    color = _DECISION_STYLE.get(decision, "#1a1a1a")
+    return f'### <span style="color:{color};">{decision}</span>\n\n{reason}'
 
 
 def _fetch_image(url: str) -> Image.Image:
@@ -368,7 +379,77 @@ def run_e2e_bulk(csv_path, q1_backend, q2_backend, q3_make_backend, q3_model_bac
                              "image_url, truck_number, make, model (optional)", progress)
 
 
-# --- FASTag only ------------------------------------------------------------------
+# --- FASTag: QR / barcode read only (deterministic decode, no claim to compare) ---
+
+def _decoded_codes_detail(read):
+    sources = {}
+    qr_bank_code = None
+    for code in read.decoded_codes:
+        if code.symbology.upper() == "QRCODE":
+            fastag_id, bank_code = parse_qr_payload(code.data)
+            if fastag_id:
+                sources["qr"] = fastag_id
+                qr_bank_code = bank_code
+        else:
+            sources[f"barcode:{code.symbology.lower()}"] = code.data
+    return {
+        "decoded_codes": [{"symbology": c.symbology, "data": c.data} for c in read.decoded_codes],
+        "parsed_identity": sources,
+        "qr_bank_code": qr_bank_code,
+    }
+
+
+def run_fastag_raw_individual(image):
+    """QR/barcode decode only -- no claimed value to compare against, and no
+    decision: the fraud-check logic (decide_fastag) needs all three sources
+    together to judge cross-consistency, so this bucket never fabricates a
+    partial pass/fail -- it only shows what was actually decoded."""
+    if image is None:
+        return "### Upload an image first.", {}
+    r = classify_fastag_upload(image)
+    if not r.get("checked"):
+        return f"### Read unavailable\n\n{r.get('error', '?')}", {}
+    detail = _decoded_codes_detail(r["read"])
+    n = len(detail["decoded_codes"])
+    summary = f"### {n} code(s) decoded" if n else "### Nothing decoded from this image"
+    return summary, detail
+
+
+def run_fastag_raw_bulk(csv_path, progress=gr.Progress()):
+    def row_fn(image, row):
+        r = classify_fastag_upload(image)
+        if not r.get("checked"):
+            return {"error": r.get("error")}
+        return _decoded_codes_detail(r["read"])
+
+    return _run_bulk_generic(csv_path, row_fn, ["decoded_codes", "parsed_identity", "qr_bank_code"],
+                             {"image_url"}, "image_url", progress)
+
+
+# --- FASTag: printed-digit OCR only (backend-selectable, no claim to compare) -----
+
+def run_fastag_ocr_individual(image, backend, gemini_model):
+    if image is None:
+        return "### Upload an image first.", {}
+    r = classify_fastag_upload(image, backend=backend, vlm_model=gemini_model if backend == "gemini" else None)
+    if not r.get("checked"):
+        return f"### Read unavailable\n\n{r.get('error', '?')}", {}
+    printed = r["read"].printed_id_text
+    summary = f"### Printed digits\n\n`{printed}`" if printed else "### Nothing legible read from this image"
+    return summary, {"extracted_printed_id": printed, "backend": backend}
+
+
+def run_fastag_ocr_bulk(csv_path, backend, gemini_model, progress=gr.Progress()):
+    def row_fn(image, row):
+        r = classify_fastag_upload(image, backend=backend, vlm_model=gemini_model if backend == "gemini" else None)
+        if not r.get("checked"):
+            return {"error": r.get("error")}
+        return {"extracted_printed_id": r["read"].printed_id_text}
+
+    return _run_bulk_generic(csv_path, row_fn, ["extracted_printed_id"], {"image_url"}, "image_url", progress)
+
+
+# --- FASTag: end-to-end ------------------------------------------------------------
 
 def run_fastag_individual(image, fastag_id, bank_code, backend, gemini_model):
     if image is None:
@@ -393,7 +474,57 @@ def run_fastag_bulk(csv_path, backend, gemini_model, progress=gr.Progress()):
                              {"image_url", "fastag_id"}, "image_url, fastag_id, bank_code (optional)", progress)
 
 
-# --- Side/axle image only ----------------------------------------------------------
+# --- Side/axle: axle count only ----------------------------------------------------
+
+def run_axle_individual(image, axle_count, axle_backend, gemini_model):
+    if image is None:
+        return "### Upload an image first.", {}
+    if axle_count is None:
+        return "### Claimed axle count is required.", {}
+    result = check_axle_count(image, int(axle_count), backend=axle_backend,
+                              model=gemini_model if axle_backend == "gemini" else None)
+    return _banner(result.decision, result.reason), result.model_dump()
+
+
+def run_axle_bulk(csv_path, axle_backend, gemini_model, progress=gr.Progress()):
+    def row_fn(image, row):
+        r = check_axle_count(image, int(row["axle_count"]), backend=axle_backend,
+                             model=gemini_model if axle_backend == "gemini" else None)
+        return {"axle_count_claimed": row["axle_count"], "decision": r.decision, "reason": r.reason,
+               "axle_count": r.axle_count, "status": r.status, "lift_axle_suspected": r.lift_axle_suspected}
+
+    return _run_bulk_generic(csv_path, row_fn, ["axle_count", "status", "lift_axle_suspected"],
+                             {"image_url", "axle_count"}, "image_url, axle_count", progress)
+
+
+# --- Side/axle: identity binding only -----------------------------------------------
+
+def run_identity_individual(image, truck_number, make, front_reference):
+    if image is None:
+        return "### Upload an image first.", {}
+    if not truck_number or not make:
+        return "### Truck number and make are both required.", {}
+    result = check_side_identity(image, truck_number, make, front_reference_image=front_reference)
+    return _banner(result.decision, result.reason), result.model_dump()
+
+
+def run_identity_bulk(csv_path, progress=gr.Progress()):
+    def row_fn(image, row):
+        front_ref = None
+        front_ref_url = _clean_optional(row.get("front_reference_url"))
+        if front_ref_url:
+            front_ref = _fetch_image(front_ref_url)
+        r = check_side_identity(image, str(row["truck_number"]), str(row["make"]),
+                                front_reference_image=front_ref)
+        return {"truck_number": row["truck_number"], "make": row["make"], "decision": r.decision,
+               "reason": r.reason, "identity_bucket": r.identity_bucket}
+
+    return _run_bulk_generic(
+        csv_path, row_fn, ["identity_bucket"], {"image_url", "truck_number", "make"},
+        "image_url, truck_number, make, front_reference_url (optional)", progress)
+
+
+# --- Side/axle: end-to-end ----------------------------------------------------------
 
 def run_side_individual(image, truck_number, make, axle_count, upload_id, front_reference,
                         axle_backend, gemini_model):
@@ -504,189 +635,170 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
     )
 
     with gr.Tabs():
-        # --- Q1 ---------------------------------------------------------------
-        with gr.Tab("Q1 — front-image gate"):
-            q1_dd = gr.Dropdown(Q1_CHOICES, value="real_cv", label="Q1 backend")
-            (q1_gm_dd,) = _gemini_model_row(q1=True)
-
+        # === Front Image (Q1 gate + Q2 VRN/colour + Q3 make/model + end-to-end) ===
+        with gr.Tab("Front Image"):
+            gr.Markdown(
+                "All four sub-tabs test the same uploaded **front photo** — the gate "
+                "(genuine/complete front view), the VRN/plate colour read, and the "
+                "make/model classifier — one stage at a time, or chained end-to-end."
+            )
             with gr.Tabs():
-                with gr.Tab("Individual"):
+                # --- Q1 ---------------------------------------------------------------
+                with gr.Tab("Q1 — front-image gate"):
+                    q1_dd = gr.Dropdown(Q1_CHOICES, value="real_cv", label="Q1 backend")
+                    (q1_gm_dd,) = _gemini_model_row(q1=True)
+
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    q1_image_in = gr.Image(type="pil", label="Upload image")
+                                    q1_vrn_in = gr.Textbox(
+                                        label="Truck number / VRN (optional — fill in to also run the "
+                                              "duplicate check against the 'front' reference library; "
+                                              "leave blank to skip it)")
+                                    q1_upload_id_in = gr.Textbox(
+                                        label="Upload id (optional — auto-generated if left blank; only "
+                                              "needed if you want this stored under a specific id)")
+                                    q1_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    q1_decision_out = gr.Markdown()
+                                    q1_json_out = gr.JSON(label="Full result")
+                            q1_run_btn.click(
+                                run_q1_individual,
+                                inputs=[q1_image_in, q1_dd, q1_gm_dd, q1_vrn_in, q1_upload_id_in],
+                                outputs=[q1_decision_out, q1_json_out])
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`, `truck_number` (optional), `upload_id` "
+                                       "(optional). Fill in `truck_number` on a row to also run the "
+                                       "duplicate check for it — `upload_id` is auto-generated if left blank.")
+                            q1_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            q1_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            q1_table_out = gr.Dataframe(label="Results")
+                            q1_download_out = gr.File(label="Download results CSV")
+                            q1_bulk_btn.click(run_q1_bulk, inputs=[q1_csv_in, q1_dd, q1_gm_dd],
+                                              outputs=[q1_table_out, q1_download_out])
+
+                # --- Q2 ---------------------------------------------------------------
+                with gr.Tab("Q2 — VRN + colour"):
+                    q2_dd = gr.Dropdown(Q2_CHOICES, value="rekognition", label="Q2 backend")
+                    (q2_gm_dd,) = _gemini_model_row(q2=True)
+
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    q2_image_in = gr.Image(type="pil", label="Upload image")
+                                    q2_vrn_in = gr.Textbox(label="Truck number (VRN)")
+                                    q2_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    q2_decision_out = gr.Markdown()
+                                    q2_json_out = gr.JSON(label="Full result")
+                            q2_run_btn.click(run_q2_individual, inputs=[q2_image_in, q2_vrn_in, q2_dd, q2_gm_dd],
+                                             outputs=[q2_decision_out, q2_json_out])
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`, `truck_number`. One row per test case.")
+                            q2_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            q2_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            q2_table_out = gr.Dataframe(label="Results")
+                            q2_download_out = gr.File(label="Download results CSV")
+                            q2_bulk_btn.click(run_q2_bulk, inputs=[q2_csv_in, q2_dd, q2_gm_dd],
+                                              outputs=[q2_table_out, q2_download_out])
+
+                # --- Q3 ---------------------------------------------------------------
+                with gr.Tab("Q3 — make + model"):
                     with gr.Row():
-                        with gr.Column():
-                            q1_image_in = gr.Image(type="pil", label="Upload image")
-                            q1_vrn_in = gr.Textbox(
-                                label="Truck number / VRN (optional — fill in to also run the "
-                                      "duplicate check against the 'front' reference library; "
-                                      "leave blank to skip it)")
-                            q1_upload_id_in = gr.Textbox(
-                                label="Upload id (optional — auto-generated if left blank; only "
-                                      "needed if you want this stored under a specific id)")
-                            q1_run_btn = gr.Button("Run", variant="primary")
-                        with gr.Column():
-                            q1_decision_out = gr.Markdown()
-                            q1_json_out = gr.JSON(label="Full result")
-                    q1_run_btn.click(
-                        run_q1_individual,
-                        inputs=[q1_image_in, q1_dd, q1_gm_dd, q1_vrn_in, q1_upload_id_in],
-                        outputs=[q1_decision_out, q1_json_out])
+                        q3m_dd = gr.Dropdown(Q3_MAKE_CHOICES, value="siglip_rekognition", label="Q3 make backend")
+                        q3mo_dd = gr.Dropdown(Q3_MODEL_CHOICES, value="claude", label="Q3 model backend")
+                    q3m_gm_dd, q3mo_gm_dd = _gemini_model_row(q3_make=True, q3_model=True)
 
-                with gr.Tab("Bulk (CSV)"):
-                    gr.Markdown("CSV columns: `image_url`, `truck_number` (optional), `upload_id` "
-                               "(optional). Fill in `truck_number` on a row to also run the "
-                               "duplicate check for it — `upload_id` is auto-generated if left blank.")
-                    q1_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
-                    q1_bulk_btn = gr.Button("Run bulk test", variant="primary")
-                    q1_table_out = gr.Dataframe(label="Results")
-                    q1_download_out = gr.File(label="Download results CSV")
-                    q1_bulk_btn.click(run_q1_bulk, inputs=[q1_csv_in, q1_dd, q1_gm_dd],
-                                      outputs=[q1_table_out, q1_download_out])
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    q3_image_in = gr.Image(type="pil", label="Upload image")
+                                    q3_make_in = gr.Textbox(label="Make")
+                                    q3_model_in = gr.Textbox(label="Model (optional)")
+                                    q3_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    q3_decision_out = gr.Markdown()
+                                    q3_json_out = gr.JSON(label="Full result")
+                            q3_run_btn.click(
+                                run_q3_individual,
+                                inputs=[q3_image_in, q3_make_in, q3_model_in, q3m_dd, q3mo_dd, q3m_gm_dd, q3mo_gm_dd],
+                                outputs=[q3_decision_out, q3_json_out],
+                            )
 
-        # --- Q2 ---------------------------------------------------------------
-        with gr.Tab("Q2 — VRN + colour"):
-            q2_dd = gr.Dropdown(Q2_CHOICES, value="rekognition", label="Q2 backend")
-            (q2_gm_dd,) = _gemini_model_row(q2=True)
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`, `make`, `model` (optional). "
+                                       "One row per test case.")
+                            q3_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            q3_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            q3_table_out = gr.Dataframe(label="Results")
+                            q3_download_out = gr.File(label="Download results CSV")
+                            q3_bulk_btn.click(
+                                run_q3_bulk,
+                                inputs=[q3_csv_in, q3m_dd, q3mo_dd, q3m_gm_dd, q3mo_gm_dd],
+                                outputs=[q3_table_out, q3_download_out],
+                            )
 
-            with gr.Tabs():
-                with gr.Tab("Individual"):
+                # --- End-to-end ---------------------------------------------------------
+                with gr.Tab("End-to-end (Q1 → Q2 → Q3)"):
                     with gr.Row():
-                        with gr.Column():
-                            q2_image_in = gr.Image(type="pil", label="Upload image")
-                            q2_vrn_in = gr.Textbox(label="Truck number (VRN)")
-                            q2_run_btn = gr.Button("Run", variant="primary")
-                        with gr.Column():
-                            q2_decision_out = gr.Markdown()
-                            q2_json_out = gr.JSON(label="Full result")
-                    q2_run_btn.click(run_q2_individual, inputs=[q2_image_in, q2_vrn_in, q2_dd, q2_gm_dd],
-                                     outputs=[q2_decision_out, q2_json_out])
+                        e2e_q1_dd = gr.Dropdown(Q1_CHOICES, value="real_cv", label="Q1 backend")
+                        e2e_q2_dd = gr.Dropdown(Q2_CHOICES, value="rekognition", label="Q2 backend")
+                        e2e_q3m_dd = gr.Dropdown(Q3_MAKE_CHOICES, value="siglip_rekognition",
+                                                 label="Q3 make backend")
+                        e2e_q3mo_dd = gr.Dropdown(Q3_MODEL_CHOICES, value="claude", label="Q3 model backend")
+                    e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm = _gemini_model_row(
+                        q1=True, q2=True, q3_make=True, q3_model=True)
 
-                with gr.Tab("Bulk (CSV)"):
-                    gr.Markdown("CSV columns: `image_url`, `truck_number`. One row per test case.")
-                    q2_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
-                    q2_bulk_btn = gr.Button("Run bulk test", variant="primary")
-                    q2_table_out = gr.Dataframe(label="Results")
-                    q2_download_out = gr.File(label="Download results CSV")
-                    q2_bulk_btn.click(run_q2_bulk, inputs=[q2_csv_in, q2_dd, q2_gm_dd],
-                                      outputs=[q2_table_out, q2_download_out])
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    e2e_image_in = gr.Image(type="pil", label="Upload image")
+                                    e2e_vrn_in = gr.Textbox(label="Truck number (VRN)")
+                                    e2e_make_in = gr.Textbox(label="Make")
+                                    e2e_model_in = gr.Textbox(label="Model (optional)")
+                                    e2e_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    e2e_decision_out = gr.Markdown()
+                                    e2e_json_out = gr.JSON(label="Full result")
+                            e2e_run_btn.click(
+                                run_e2e_individual,
+                                inputs=[e2e_image_in, e2e_vrn_in, e2e_make_in, e2e_model_in,
+                                       e2e_q1_dd, e2e_q2_dd, e2e_q3m_dd, e2e_q3mo_dd,
+                                       e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm],
+                                outputs=[e2e_decision_out, e2e_json_out],
+                            )
 
-        # --- Q3 ---------------------------------------------------------------
-        with gr.Tab("Q3 — make + model"):
-            with gr.Row():
-                q3m_dd = gr.Dropdown(Q3_MAKE_CHOICES, value="siglip_rekognition", label="Q3 make backend")
-                q3mo_dd = gr.Dropdown(Q3_MODEL_CHOICES, value="claude", label="Q3 model backend")
-            q3m_gm_dd, q3mo_gm_dd = _gemini_model_row(q3_make=True, q3_model=True)
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown(
+                                "CSV columns: `image_url`, `truck_number`, `make`, `model` (optional). "
+                                "One row per test case."
+                            )
+                            e2e_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            e2e_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            e2e_table_out = gr.Dataframe(label="Results")
+                            e2e_download_out = gr.File(label="Download results CSV")
+                            e2e_bulk_btn.click(
+                                run_e2e_bulk,
+                                inputs=[e2e_csv_in, e2e_q1_dd, e2e_q2_dd, e2e_q3m_dd, e2e_q3mo_dd,
+                                       e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm],
+                                outputs=[e2e_table_out, e2e_download_out],
+                            )
 
-            with gr.Tabs():
-                with gr.Tab("Individual"):
-                    with gr.Row():
-                        with gr.Column():
-                            q3_image_in = gr.Image(type="pil", label="Upload image")
-                            q3_make_in = gr.Textbox(label="Make")
-                            q3_model_in = gr.Textbox(label="Model (optional)")
-                            q3_run_btn = gr.Button("Run", variant="primary")
-                        with gr.Column():
-                            q3_decision_out = gr.Markdown()
-                            q3_json_out = gr.JSON(label="Full result")
-                    q3_run_btn.click(
-                        run_q3_individual,
-                        inputs=[q3_image_in, q3_make_in, q3_model_in, q3m_dd, q3mo_dd, q3m_gm_dd, q3mo_gm_dd],
-                        outputs=[q3_decision_out, q3_json_out],
-                    )
-
-                with gr.Tab("Bulk (CSV)"):
-                    gr.Markdown("CSV columns: `image_url`, `make`, `model` (optional). One row per test case.")
-                    q3_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
-                    q3_bulk_btn = gr.Button("Run bulk test", variant="primary")
-                    q3_table_out = gr.Dataframe(label="Results")
-                    q3_download_out = gr.File(label="Download results CSV")
-                    q3_bulk_btn.click(
-                        run_q3_bulk,
-                        inputs=[q3_csv_in, q3m_dd, q3mo_dd, q3m_gm_dd, q3mo_gm_dd],
-                        outputs=[q3_table_out, q3_download_out],
-                    )
-
-        # --- End-to-end ---------------------------------------------------------
-        with gr.Tab("End-to-end (Q1 → Q2 → Q3)"):
-            with gr.Row():
-                e2e_q1_dd = gr.Dropdown(Q1_CHOICES, value="real_cv", label="Q1 backend")
-                e2e_q2_dd = gr.Dropdown(Q2_CHOICES, value="rekognition", label="Q2 backend")
-                e2e_q3m_dd = gr.Dropdown(Q3_MAKE_CHOICES, value="siglip_rekognition", label="Q3 make backend")
-                e2e_q3mo_dd = gr.Dropdown(Q3_MODEL_CHOICES, value="claude", label="Q3 model backend")
-            e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm = _gemini_model_row(
-                q1=True, q2=True, q3_make=True, q3_model=True)
-
-            with gr.Tabs():
-                with gr.Tab("Individual"):
-                    with gr.Row():
-                        with gr.Column():
-                            e2e_image_in = gr.Image(type="pil", label="Upload image")
-                            e2e_vrn_in = gr.Textbox(label="Truck number (VRN)")
-                            e2e_make_in = gr.Textbox(label="Make")
-                            e2e_model_in = gr.Textbox(label="Model (optional)")
-                            e2e_run_btn = gr.Button("Run", variant="primary")
-                        with gr.Column():
-                            e2e_decision_out = gr.Markdown()
-                            e2e_json_out = gr.JSON(label="Full result")
-                    e2e_run_btn.click(
-                        run_e2e_individual,
-                        inputs=[e2e_image_in, e2e_vrn_in, e2e_make_in, e2e_model_in,
-                               e2e_q1_dd, e2e_q2_dd, e2e_q3m_dd, e2e_q3mo_dd,
-                               e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm],
-                        outputs=[e2e_decision_out, e2e_json_out],
-                    )
-
-                with gr.Tab("Bulk (CSV)"):
-                    gr.Markdown(
-                        "CSV columns: `image_url`, `truck_number`, `make`, `model` (optional). "
-                        "One row per test case."
-                    )
-                    e2e_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
-                    e2e_bulk_btn = gr.Button("Run bulk test", variant="primary")
-                    e2e_table_out = gr.Dataframe(label="Results")
-                    e2e_download_out = gr.File(label="Download results CSV")
-                    e2e_bulk_btn.click(
-                        run_e2e_bulk,
-                        inputs=[e2e_csv_in, e2e_q1_dd, e2e_q2_dd, e2e_q3m_dd, e2e_q3mo_dd,
-                               e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm],
-                        outputs=[e2e_table_out, e2e_download_out],
-                    )
-
-        # --- FASTag ---------------------------------------------------------------
-        with gr.Tab("FASTag"):
-            fastag_dd = gr.Dropdown(FASTAG_OCR_BACKENDS, value=config.FASTAG_OCR_BACKEND,
-                                    label="Printed-digit OCR backend")
-            with gr.Accordion("Gemini model (only used if the backend above is \"gemini\")", open=False):
-                fastag_gm_dd = gr.Dropdown(GEMINI_MODEL_CHOICES, value=config.GEMINI_MODEL,
-                                           allow_custom_value=True, label="Gemini model")
-
-            with gr.Tabs():
-                with gr.Tab("Individual"):
-                    with gr.Row():
-                        with gr.Column():
-                            fastag_image_in = gr.Image(type="pil", label="Upload FASTag photo")
-                            fastag_id_in = gr.Textbox(label="Claimed FASTag id")
-                            fastag_bank_in = gr.Textbox(label="Claimed bank code (optional)")
-                            fastag_run_btn = gr.Button("Run", variant="primary")
-                        with gr.Column():
-                            fastag_decision_out = gr.Markdown()
-                            fastag_json_out = gr.JSON(label="Full result")
-                    fastag_run_btn.click(
-                        run_fastag_individual,
-                        inputs=[fastag_image_in, fastag_id_in, fastag_bank_in, fastag_dd, fastag_gm_dd],
-                        outputs=[fastag_decision_out, fastag_json_out],
-                    )
-
-                with gr.Tab("Bulk (CSV)"):
-                    gr.Markdown("CSV columns: `image_url`, `fastag_id`, `bank_code` (optional). "
-                               "One row per test case.")
-                    fastag_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
-                    fastag_bulk_btn = gr.Button("Run bulk test", variant="primary")
-                    fastag_table_out = gr.Dataframe(label="Results")
-                    fastag_download_out = gr.File(label="Download results CSV")
-                    fastag_bulk_btn.click(run_fastag_bulk, inputs=[fastag_csv_in, fastag_dd, fastag_gm_dd],
-                                         outputs=[fastag_table_out, fastag_download_out])
-
-        # --- Side/axle image --------------------------------------------------------
-        with gr.Tab("Side/axle image"):
+        # === Side/Axle Image (axle count + identity binding + duplicate + e2e) ===
+        with gr.Tab("Side/Axle Image"):
+            gr.Markdown(
+                "Each sub-tab tests one check in isolation against the same uploaded "
+                "**side/axle photo** — axle count, identity-to-claimed-vehicle binding, "
+                "duplicate-photo reuse — or the full end-to-end decision that combines "
+                "all three (worst of the three wins)."
+            )
             axle_dd = gr.Dropdown(AXLE_COUNT_BACKENDS, value=config.AXLE_COUNT_BACKEND,
                                   label="Axle-count model backend")
             with gr.Accordion("Gemini model (only used if the backend above is \"gemini\")", open=False):
@@ -694,40 +806,262 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
                                          allow_custom_value=True, label="Gemini model")
 
             with gr.Tabs():
-                with gr.Tab("Individual"):
-                    with gr.Row():
-                        with gr.Column():
-                            side_image_in = gr.Image(type="pil", label="Upload side/axle photo")
-                            side_vrn_in = gr.Textbox(label="Claimed truck number (VRN)")
-                            side_make_in = gr.Textbox(label="Claimed make")
-                            side_axle_in = gr.Number(label="Claimed axle count", precision=0)
-                            side_upload_id_in = gr.Textbox(
-                                label="Upload id (optional — auto-generated if left blank; the "
-                                      "duplicate check always runs)")
-                            side_front_ref_in = gr.Image(
-                                type="pil", label="On-file front photo (optional, corner_view bucket only)")
-                            side_run_btn = gr.Button("Run", variant="primary")
-                        with gr.Column():
-                            side_decision_out = gr.Markdown()
-                            side_json_out = gr.JSON(label="Full result")
-                    side_run_btn.click(
-                        run_side_individual,
-                        inputs=[side_image_in, side_vrn_in, side_make_in, side_axle_in, side_upload_id_in,
-                               side_front_ref_in, axle_dd, axle_gm_dd],
-                        outputs=[side_decision_out, side_json_out],
-                    )
+                # --- Axle count only --------------------------------------------------
+                with gr.Tab("Axle count"):
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    axle_image_in = gr.Image(type="pil", label="Upload side/axle photo")
+                                    axle_count_in = gr.Number(label="Claimed axle count", precision=0)
+                                    axle_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    axle_decision_out = gr.Markdown()
+                                    axle_json_out = gr.JSON(label="Full result")
+                            axle_run_btn.click(
+                                run_axle_individual,
+                                inputs=[axle_image_in, axle_count_in, axle_dd, axle_gm_dd],
+                                outputs=[axle_decision_out, axle_json_out],
+                            )
 
-                with gr.Tab("Bulk (CSV)"):
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`, `axle_count`. One row per test case.")
+                            axle_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            axle_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            axle_table_out = gr.Dataframe(label="Results")
+                            axle_download_out = gr.File(label="Download results CSV")
+                            axle_bulk_btn.click(run_axle_bulk, inputs=[axle_csv_in, axle_dd, axle_gm_dd],
+                                               outputs=[axle_table_out, axle_download_out])
+
+                # --- Identity binding only ---------------------------------------------
+                with gr.Tab("Identity binding"):
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    identity_image_in = gr.Image(type="pil", label="Upload side/axle photo")
+                                    identity_vrn_in = gr.Textbox(label="Claimed truck number (VRN)")
+                                    identity_make_in = gr.Textbox(label="Claimed make")
+                                    identity_front_ref_in = gr.Image(
+                                        type="pil",
+                                        label="On-file front photo (optional, corner_view bucket only)")
+                                    identity_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    identity_decision_out = gr.Markdown()
+                                    identity_json_out = gr.JSON(label="Full result")
+                            identity_run_btn.click(
+                                run_identity_individual,
+                                inputs=[identity_image_in, identity_vrn_in, identity_make_in,
+                                       identity_front_ref_in],
+                                outputs=[identity_decision_out, identity_json_out],
+                            )
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown(
+                                "CSV columns: `image_url`, `truck_number`, `make`, "
+                                "`front_reference_url` (optional). One row per test case."
+                            )
+                            identity_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            identity_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            identity_table_out = gr.Dataframe(label="Results")
+                            identity_download_out = gr.File(label="Download results CSV")
+                            identity_bulk_btn.click(run_identity_bulk, inputs=[identity_csv_in],
+                                                   outputs=[identity_table_out, identity_download_out])
+
+                # --- Duplicate check only -----------------------------------------------
+                with gr.Tab("Duplicate check"):
                     gr.Markdown(
-                        "CSV columns: `image_url`, `truck_number`, `make`, `axle_count`, "
-                        "`front_reference_url` (optional), `upload_id` (optional). One row per test case."
+                        "Checks/stores against the `side` reference corpus only (see the "
+                        "**Reference Images** tab) — never compared against front or FASTag "
+                        "images. Needs `VFIV_PGVECTOR_DSN` set to a reachable Postgres+pgvector "
+                        "instance."
                     )
-                    side_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
-                    side_bulk_btn = gr.Button("Run bulk test", variant="primary")
-                    side_table_out = gr.Dataframe(label="Results")
-                    side_download_out = gr.File(label="Download results CSV")
-                    side_bulk_btn.click(run_side_bulk, inputs=[side_csv_in, axle_dd, axle_gm_dd],
-                                       outputs=[side_table_out, side_download_out])
+                    side_dup_type_state = gr.State("side")
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    side_dup_image_in = gr.Image(type="pil", label="Upload side/axle photo")
+                                    side_dup_vrn_in = gr.Textbox(label="Truck number (VRN)")
+                                    side_dup_upload_id_in = gr.Textbox(
+                                        label="Upload id (optional — auto-generated if left blank)")
+                                    with gr.Row():
+                                        side_dup_topk_in = gr.Number(label="Top-K neighbors to check",
+                                                                    value=5, precision=0)
+                                        side_dup_simmin_in = gr.Number(
+                                            label="Similarity threshold", value=config.DUPLICATE_SIMILARITY_MIN)
+                                    side_dup_store_in = gr.Checkbox(
+                                        value=True, label="Store this image in the reference library "
+                                                          "(uncheck for a pure lookup that doesn't grow "
+                                                          "the corpus)")
+                                    side_dup_run_btn = gr.Button("Check / Store", variant="primary")
+                                with gr.Column():
+                                    side_dup_decision_out = gr.Markdown()
+                                    side_dup_json_out = gr.JSON(label="Full result")
+                            side_dup_run_btn.click(
+                                run_duplicate_check,
+                                inputs=[side_dup_image_in, side_dup_upload_id_in, side_dup_vrn_in,
+                                       side_dup_type_state, side_dup_topk_in, side_dup_simmin_in,
+                                       side_dup_store_in],
+                                outputs=[side_dup_decision_out, side_dup_json_out],
+                            )
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`, `truck_number`, `upload_id` (optional). "
+                                       "One row per test case.")
+                            side_dup_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            side_dup_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            side_dup_table_out = gr.Dataframe(label="Results")
+                            side_dup_download_out = gr.File(label="Download results CSV")
+                            side_dup_bulk_btn.click(
+                                run_duplicate_bulk,
+                                inputs=[side_dup_csv_in, side_dup_type_state, side_dup_topk_in,
+                                       side_dup_simmin_in, side_dup_store_in],
+                                outputs=[side_dup_table_out, side_dup_download_out],
+                            )
+
+                # --- End-to-end ----------------------------------------------------------
+                with gr.Tab("End-to-end"):
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    side_image_in = gr.Image(type="pil", label="Upload side/axle photo")
+                                    side_vrn_in = gr.Textbox(label="Claimed truck number (VRN)")
+                                    side_make_in = gr.Textbox(label="Claimed make")
+                                    side_axle_in = gr.Number(label="Claimed axle count", precision=0)
+                                    side_upload_id_in = gr.Textbox(
+                                        label="Upload id (optional — auto-generated if left blank; the "
+                                              "duplicate check always runs)")
+                                    side_front_ref_in = gr.Image(
+                                        type="pil",
+                                        label="On-file front photo (optional, corner_view bucket only)")
+                                    side_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    side_decision_out = gr.Markdown()
+                                    side_json_out = gr.JSON(label="Full result")
+                            side_run_btn.click(
+                                run_side_individual,
+                                inputs=[side_image_in, side_vrn_in, side_make_in, side_axle_in,
+                                       side_upload_id_in, side_front_ref_in, axle_dd, axle_gm_dd],
+                                outputs=[side_decision_out, side_json_out],
+                            )
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown(
+                                "CSV columns: `image_url`, `truck_number`, `make`, `axle_count`, "
+                                "`front_reference_url` (optional), `upload_id` (optional). "
+                                "One row per test case."
+                            )
+                            side_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            side_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            side_table_out = gr.Dataframe(label="Results")
+                            side_download_out = gr.File(label="Download results CSV")
+                            side_bulk_btn.click(run_side_bulk, inputs=[side_csv_in, axle_dd, axle_gm_dd],
+                                               outputs=[side_table_out, side_download_out])
+
+        # === FASTag (QR/barcode read + printed-digit OCR + end-to-end) ===========
+        with gr.Tab("FASTag"):
+            gr.Markdown(
+                "Each sub-tab tests one piece in isolation against the same uploaded "
+                "**FASTag photo** — the deterministic QR/barcode decode, the printed-digit "
+                "OCR read — or the full end-to-end decision, which cross-checks all three "
+                "sources against each other AND the claimed value (a disagreement between "
+                "legibly-read sources is itself a REJECT, checked before the isolated "
+                "sub-tabs here could even show you). The isolated sub-tabs below show raw "
+                "reads only, with no pass/fail of their own, since that cross-check needs "
+                "all three sources together."
+            )
+            fastag_dd = gr.Dropdown(FASTAG_OCR_BACKENDS, value=config.FASTAG_OCR_BACKEND,
+                                    label="Printed-digit OCR backend")
+            with gr.Accordion("Gemini model (only used if the backend above is \"gemini\")", open=False):
+                fastag_gm_dd = gr.Dropdown(GEMINI_MODEL_CHOICES, value=config.GEMINI_MODEL,
+                                           allow_custom_value=True, label="Gemini model")
+
+            with gr.Tabs():
+                # --- QR / Barcode read only ---------------------------------------------
+                with gr.Tab("QR / Barcode read"):
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    fastag_raw_image_in = gr.Image(type="pil", label="Upload FASTag photo")
+                                    fastag_raw_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    fastag_raw_decision_out = gr.Markdown()
+                                    fastag_raw_json_out = gr.JSON(label="Full result")
+                            fastag_raw_run_btn.click(
+                                run_fastag_raw_individual,
+                                inputs=[fastag_raw_image_in],
+                                outputs=[fastag_raw_decision_out, fastag_raw_json_out],
+                            )
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`. One row per test case.")
+                            fastag_raw_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            fastag_raw_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            fastag_raw_table_out = gr.Dataframe(label="Results")
+                            fastag_raw_download_out = gr.File(label="Download results CSV")
+                            fastag_raw_bulk_btn.click(
+                                run_fastag_raw_bulk, inputs=[fastag_raw_csv_in],
+                                outputs=[fastag_raw_table_out, fastag_raw_download_out])
+
+                # --- Printed-digit OCR only ---------------------------------------------
+                with gr.Tab("Printed digits (OCR)"):
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    fastag_ocr_image_in = gr.Image(type="pil", label="Upload FASTag photo")
+                                    fastag_ocr_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    fastag_ocr_decision_out = gr.Markdown()
+                                    fastag_ocr_json_out = gr.JSON(label="Full result")
+                            fastag_ocr_run_btn.click(
+                                run_fastag_ocr_individual,
+                                inputs=[fastag_ocr_image_in, fastag_dd, fastag_gm_dd],
+                                outputs=[fastag_ocr_decision_out, fastag_ocr_json_out],
+                            )
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`. One row per test case.")
+                            fastag_ocr_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            fastag_ocr_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            fastag_ocr_table_out = gr.Dataframe(label="Results")
+                            fastag_ocr_download_out = gr.File(label="Download results CSV")
+                            fastag_ocr_bulk_btn.click(
+                                run_fastag_ocr_bulk, inputs=[fastag_ocr_csv_in, fastag_dd, fastag_gm_dd],
+                                outputs=[fastag_ocr_table_out, fastag_ocr_download_out])
+
+                # --- End-to-end ----------------------------------------------------------
+                with gr.Tab("End-to-end"):
+                    with gr.Tabs():
+                        with gr.Tab("Individual"):
+                            with gr.Row():
+                                with gr.Column():
+                                    fastag_image_in = gr.Image(type="pil", label="Upload FASTag photo")
+                                    fastag_id_in = gr.Textbox(label="Claimed FASTag id")
+                                    fastag_bank_in = gr.Textbox(label="Claimed bank code (optional)")
+                                    fastag_run_btn = gr.Button("Run", variant="primary")
+                                with gr.Column():
+                                    fastag_decision_out = gr.Markdown()
+                                    fastag_json_out = gr.JSON(label="Full result")
+                            fastag_run_btn.click(
+                                run_fastag_individual,
+                                inputs=[fastag_image_in, fastag_id_in, fastag_bank_in, fastag_dd, fastag_gm_dd],
+                                outputs=[fastag_decision_out, fastag_json_out],
+                            )
+
+                        with gr.Tab("Bulk (CSV)"):
+                            gr.Markdown("CSV columns: `image_url`, `fastag_id`, `bank_code` (optional). "
+                                       "One row per test case.")
+                            fastag_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
+                            fastag_bulk_btn = gr.Button("Run bulk test", variant="primary")
+                            fastag_table_out = gr.Dataframe(label="Results")
+                            fastag_download_out = gr.File(label="Download results CSV")
+                            fastag_bulk_btn.click(
+                                run_fastag_bulk, inputs=[fastag_csv_in, fastag_dd, fastag_gm_dd],
+                                outputs=[fastag_table_out, fastag_download_out])
 
         # --- Reference-image library --------------------------------------------
         with gr.Tab("Reference Images"):
