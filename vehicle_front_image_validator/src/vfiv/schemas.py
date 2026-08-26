@@ -18,6 +18,7 @@ class FrontImageResult(BaseModel):
     ai_generated: Optional[bool] = None
     ai_confidence: Optional[float] = None
     confidence: Optional[float] = None
+    duplicate_is_suspect: Optional[bool] = None
     error: Optional[str] = None
 
 

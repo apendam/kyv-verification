@@ -241,23 +241,27 @@ def _run_bulk_generic(csv_path, row_fn, extra_out_cols: list[str], required_cols
 
 # --- Q1 only ------------------------------------------------------------------
 
-def run_q1_individual(image, q1_backend, q1_gemini_model):
+def run_q1_individual(image, q1_backend, q1_gemini_model, claimed_vrn=None, upload_id=None):
     if image is None:
         return "### Upload an image first.", {}
-    result = run_q1_only(image, q1_backend, q1_gemini_model)
+    result = run_q1_only(image, q1_backend, q1_gemini_model,
+                         claimed_vrn=_clean_optional(claimed_vrn), upload_id=_clean_optional(upload_id))
     return _banner(result.decision, result.reason), result.model_dump()
 
 
 def run_q1_bulk(csv_path, q1_backend, q1_gemini_model, progress=gr.Progress()):
     def row_fn(image, row):
-        r = run_q1_only(image, q1_backend, q1_gemini_model)
+        r = run_q1_only(image, q1_backend, q1_gemini_model,
+                        claimed_vrn=_clean_optional(row.get("truck_number")),
+                        upload_id=_clean_optional(row.get("upload_id")))
         return {"decision": r.decision, "reason": r.reason, "vehicle_type": r.vehicle_type,
                "view": r.view, "is_front": r.is_front, "front_complete": r.front_complete,
-               "confidence": r.confidence}
+               "confidence": r.confidence, "duplicate_is_suspect": r.duplicate_is_suspect}
 
-    return _run_bulk_generic(csv_path, row_fn,
-                             ["vehicle_type", "view", "is_front", "front_complete", "confidence"],
-                             {"image_url"}, "image_url", progress)
+    return _run_bulk_generic(
+        csv_path, row_fn,
+        ["vehicle_type", "view", "is_front", "front_complete", "confidence", "duplicate_is_suspect"],
+        {"image_url"}, "image_url, truck_number (optional), upload_id (optional)", progress)
 
 
 # --- Q2 only ------------------------------------------------------------------
@@ -501,15 +505,26 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
                     with gr.Row():
                         with gr.Column():
                             q1_image_in = gr.Image(type="pil", label="Upload image")
+                            q1_vrn_in = gr.Textbox(
+                                label="Truck number / VRN (optional — required together with "
+                                      "Upload id below to also run the duplicate check)")
+                            q1_upload_id_in = gr.Textbox(
+                                label="Upload id (optional — fill in together with the VRN above "
+                                      "to check/store this photo against the 'front' reference "
+                                      "library; leave both blank to skip the duplicate check)")
                             q1_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             q1_decision_out = gr.Markdown()
                             q1_json_out = gr.JSON(label="Full result")
-                    q1_run_btn.click(run_q1_individual, inputs=[q1_image_in, q1_dd, q1_gm_dd],
-                                     outputs=[q1_decision_out, q1_json_out])
+                    q1_run_btn.click(
+                        run_q1_individual,
+                        inputs=[q1_image_in, q1_dd, q1_gm_dd, q1_vrn_in, q1_upload_id_in],
+                        outputs=[q1_decision_out, q1_json_out])
 
                 with gr.Tab("Bulk (CSV)"):
-                    gr.Markdown("CSV columns: `image_url`. One row per test case.")
+                    gr.Markdown("CSV columns: `image_url`, `truck_number` (optional), `upload_id` "
+                               "(optional). Fill in both `truck_number` and `upload_id` on a row "
+                               "to also run the duplicate check for that row.")
                     q1_csv_in = gr.File(label="Upload CSV", file_types=[".csv"])
                     q1_bulk_btn = gr.Button("Run bulk test", variant="primary")
                     q1_table_out = gr.Dataframe(label="Results")

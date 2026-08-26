@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from vfiv.experiments.runner import run_test_case
+from vfiv.experiments.runner import run_q1_only, run_test_case
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 HAS_ANTHROPIC = bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -61,6 +61,55 @@ def test_default_backends_pass_matches_production():
     assert result.q3_make_backend == "siglip_rekognition"
     assert result.overall_decision == "PASS"
     assert result.q3_make_status == "MATCH"
+
+
+def _passing_q1_raw():
+    return {"checked": True, "vehicle_type": "truck", "view": "front", "is_front": True,
+           "front_complete": True, "confidence": 95.0, "is_screenshot": False,
+           "is_photo_of_photo": False, "ai_generated": False, "ai_confidence": 0.0,
+           "reason": "clear front view"}
+
+
+def test_q1_only_skips_duplicate_check_without_vrn_and_upload_id(monkeypatch):
+    """Without BOTH claimed_vrn and upload_id, run_q1_only must not touch the
+    duplicate-detection corpus at all -- it's opt-in, same as
+    check_side_image_upload's upload_id gate."""
+    import vfiv.experiments.runner as runner_module
+
+    monkeypatch.setattr(runner_module.q1_select, "classify_q1", lambda image, backend, gemini_model=None: _passing_q1_raw())
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("check_duplicate should not be called without claimed_vrn + upload_id")
+
+    monkeypatch.setattr(runner_module, "check_duplicate", _fail_if_called)
+
+    result = run_q1_only("does-not-matter.jpg")
+    assert result.decision == "PASS"
+    assert result.duplicate_is_suspect is None
+
+
+def test_q1_only_folds_in_duplicate_suspect_when_vrn_and_upload_id_given(monkeypatch):
+    """With both claimed_vrn and upload_id given, a duplicate-check MANUAL_REVIEW
+    verdict must escalate Q1's own PASS decision and surface duplicate_is_suspect."""
+    import vfiv.experiments.runner as runner_module
+    from vfiv.schemas import DuplicateCheckResult
+
+    monkeypatch.setattr(runner_module.q1_select, "classify_q1", lambda image, backend, gemini_model=None: _passing_q1_raw())
+
+    def _fake_check_duplicate(image, upload_id, claimed_vrn, image_type="front"):
+        assert image_type == "front"
+        return DuplicateCheckResult(
+            decision="MANUAL_REVIEW", reason="near-duplicate of img_1", checked=True,
+            claimed_vrn=claimed_vrn, is_duplicate_suspect=True, best_match_id="img_1",
+            best_match_similarity=0.99, best_match_vrn="MH12AB1234",
+        )
+
+    monkeypatch.setattr(runner_module, "check_duplicate", _fake_check_duplicate)
+
+    result = run_q1_only("does-not-matter.jpg", claimed_vrn="UP42T4069", upload_id="img_x")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.duplicate_is_suspect is True
+    assert "duplicate: near-duplicate of img_1" in result.reason
 
 
 @requires_both

@@ -11,6 +11,7 @@ from vfiv import config
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.schemas import ExperimentResult
 from vfiv.schemas import FrontImageResult, VrnCheckResult
+from vfiv.validators.duplicate_check import check_duplicate
 from vfiv.validators.front_image import decide_front_image
 from vfiv.validators.make_model_check import _match_model
 from vfiv.validators.vrn_check import decide_vrn
@@ -41,11 +42,27 @@ def run_q1_only(
     q1_gemini_model: str | None = None,
     conf_min: float = config.FRONT_CONF_MIN,
     ai_reject_conf: float = config.FRONT_AI_REJECT_CONF,
+    claimed_vrn: str | None = None,
+    upload_id: str | None = None,
 ) -> FrontImageResult:
-    """Q1 in isolation — no VRN/make needed, useful for iterating on the front-gate
-    backend alone."""
+    """Q1 in isolation — no VRN/make needed for the gate itself, useful for
+    iterating on the front-gate backend alone. Pass BOTH ``claimed_vrn`` and
+    ``upload_id`` to also run the cross-upload duplicate check
+    (``validators/duplicate_check.py``, ``image_type="front"``) and fold its
+    verdict into the returned decision — same opt-in-via-``upload_id`` pattern as
+    ``validators/side_image_check.py``'s ``check_side_image_upload``."""
     raw1 = q1_select.classify_q1(image, q1_backend, gemini_model=q1_gemini_model)
-    return _decide_q1(raw1, conf_min, ai_reject_conf)
+    result = _decide_q1(raw1, conf_min, ai_reject_conf)
+
+    if not (claimed_vrn and upload_id):
+        return result
+
+    dup = check_duplicate(image, upload_id, claimed_vrn, image_type="front")
+    return result.model_copy(update={
+        "decision": max([result.decision, dup.decision], key=_SEVERITY.get),
+        "reason": f"{result.reason}; duplicate: {dup.reason}",
+        "duplicate_is_suspect": dup.is_duplicate_suspect,
+    })
 
 
 def run_q2_only(

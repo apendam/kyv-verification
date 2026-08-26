@@ -333,6 +333,29 @@ result = check_duplicate(image, upload_id="upload_123", claimed_vrn="UP42T4069",
 result.is_duplicate_suspect, result.best_match_id, result.best_match_similarity, result.best_match_vrn
 ```
 
+**Where `upload_id` comes from and why it gates the check**: `upload_id` is
+never parsed or interpreted — it's a stable identifier for the row being
+stored (in production, the real upload/submission id from your own system),
+kept purely so a future match can be traced back to *which* prior upload it's
+a near-duplicate of (`best_match_id` in the result IS this value), and so
+storage is idempotent (re-running the same `upload_id` upserts that row
+instead of accumulating duplicates of itself). Both `side_image_check.py` and
+Q1's test/webapp path (`run_q1_only`, below) treat the duplicate check as
+**opt-in**: it only runs when a real `upload_id` (and, for Q1, a claimed VRN
+too — needed to tell an honest re-upload from a swapped-plate fraud lead)
+is supplied. Leave both blank in the webapp to skip it entirely — no error,
+just no duplicate check for that test.
+
+**Q1 (front-image gate)** — `run_q1_only()` (`experiments/runner.py`, also
+what the webapp's **Q1** tab calls) accepts the same optional `claimed_vrn` +
+`upload_id` pair: give both to also run `check_duplicate(..., image_type="front")`
+and fold its verdict into Q1's own decision (worst-of, same REJECT >
+MANUAL_REVIEW > PASS ordering as everywhere else); a suspected duplicate
+surfaces as `duplicate_is_suspect=True` on the result. Wired at the
+test/webapp layer (rather than inside `validators/front_image.py`'s
+production `validate_front_image`) so it works with whichever Q1 backend
+you're comparing (`real_cv` | `claude` | `gemini`).
+
 **Seeding the reference library** — the webapp's **Reference Images** tab
 (`python -m vfiv.webapp`) lets you upload known-good truck images by type (front/side/
 fastag), store their embeddings, and check new images against what's stored — without
@@ -425,9 +448,9 @@ labeled pairs before trusting it. The `pure_side_profile` bucket is the genuinel
 open problem flagged in design discussion, not solved here — a make/model match
 from that bucket alone is capped at `MANUAL_REVIEW`.
 
-Duplicate detection reuses `check_duplicate()` unchanged (only if `upload_id` is
-passed) — **known limitation**: shares the same pgvector table as front-image
-uploads unless you scope it separately.
+Duplicate detection reuses `check_duplicate()` unchanged, only if `upload_id` is
+passed — scoped to the `"side"` `image_type`, so it's never compared against
+front or FASTag embeddings (see the `image_type` scoping above).
 
 ```bash
 python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3
