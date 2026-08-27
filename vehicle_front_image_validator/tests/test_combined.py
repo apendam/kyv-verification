@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from vfiv.validators.combined import validate_upload
+from vfiv.combined import validate_upload
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 HAS_ANTHROPIC = bool(os.environ.get("ANTHROPIC_API_KEY"))

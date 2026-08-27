@@ -1,6 +1,6 @@
 import pytest
 
-from vfiv.validators.side_image.side_image_check import (
+from vfiv.side_image.side_image_check import (
     _worst_decision,
     check_axle_count,
     check_side_identity,
@@ -62,7 +62,7 @@ def test_unknown_axle_backend_raises_before_any_image_io():
 def test_check_axle_count_wraps_classify_and_decide(monkeypatch):
     """check_axle_count is the standalone (webapp bucket) entry point -- must
     return the same decision classify+decide would, packaged as AxleCountResult."""
-    import vfiv.validators.side_image.side_image_check as side_module
+    import vfiv.side_image.side_image_check as side_module
 
     monkeypatch.setattr(side_module, "classify_axle_count",
                         lambda image, backend, model=None: _axle_read(3))
@@ -77,7 +77,7 @@ def test_check_axle_count_wraps_classify_and_decide(monkeypatch):
 def test_check_axle_count_degrades_on_classify_exception(monkeypatch):
     """A raised exception (e.g. an unknown/misconfigured backend) must degrade to
     MANUAL_REVIEW, not crash the caller -- same posture as the rest of the module."""
-    import vfiv.validators.side_image.side_image_check as side_module
+    import vfiv.side_image.side_image_check as side_module
 
     def _boom(image, backend, model=None):
         raise ValueError("unknown axle-count backend: 'bogus'")
@@ -93,7 +93,7 @@ def test_check_axle_count_degrades_on_classify_exception(monkeypatch):
 def test_check_side_identity_routes_to_vrn_visible_bucket(monkeypatch):
     """When the type-classifier says vrn_visible, check_side_identity must dispatch
     to the VRN-based identity check, not the corner/pure-side-profile arms."""
-    import vfiv.validators.side_image.side_image_check as side_module
+    import vfiv.side_image.side_image_check as side_module
 
     monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
     monkeypatch.setattr(side_module, "get_side_image_type_classifier",

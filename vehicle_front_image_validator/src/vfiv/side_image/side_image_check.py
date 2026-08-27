@@ -5,7 +5,7 @@ Three checks, each independently reported (a single prompt can't run a duplicate
 search + a VLM axle count + an OCR/embedding identity check — see combined.py's
 docstring for why this has to live in code, same reasoning applies here):
 
-1. Duplicate check — reuses ``validators/duplicate_check.py``'s ``check_duplicate``
+1. Duplicate check — reuses ``duplicate_check.py``'s ``check_duplicate``
    with ``image_type="side"``, only if ``upload_id`` is given. Scoped to the
    "side" corpus only (``backends/vector_store.py``'s ``image_type`` column) so
    it's never compared against front or FASTag embeddings.
@@ -57,9 +57,9 @@ from vfiv.backends.image_io import load_rgb_array
 from vfiv.backends.siglip import get_make_classifier, get_side_image_type_classifier, get_siglip_model
 from vfiv.backends.vehicle import get_vehicle_detector
 from vfiv.schemas import AxleCountResult, SideImageCheckResult, SideImageIdentityResult
-from vfiv.validators.base import call_vlm_json
-from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.front_image.vrn_check import validate_vrn
+from vfiv.base import call_vlm_json
+from vfiv.duplicate_check import check_duplicate
+from vfiv.front_image.vrn_check import validate_vrn
 
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
 

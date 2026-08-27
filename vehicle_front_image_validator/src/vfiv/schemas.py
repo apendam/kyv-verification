@@ -44,7 +44,7 @@ class MakeModelCheckResult(BaseModel):
     """Q3: make comparison always runs — checked against TWO independent real-model
     sources (SigLIP zero-shot classifier + AWS Rekognition's painted-brand-text read),
     matched if EITHER agrees with the claimed make (each has known blind spots — see
-    ``validators/front_image/make_model_check.py``). Model comparison only runs (and can flip the
+    ``front_image/make_model_check.py``). Model comparison only runs (and can flip the
     decision) when ``model_checked`` is True."""
     decision: Decision
     reason: str
@@ -71,7 +71,7 @@ class DuplicateCheckResult(BaseModel):
     near-duplicate (by SigLIP embedding cosine similarity) of a PRIOR upload filed
     under a DIFFERENT claimed VRN — the "same photo, swapped plate" fraud pattern.
     A near-duplicate under the SAME VRN is an ordinary re-upload and is never
-    flagged. See ``validators/duplicate_check.py``."""
+    flagged. See ``duplicate_check.py``."""
     decision: Decision
     reason: str
     checked: bool
@@ -88,7 +88,7 @@ class FastagCheckResult(BaseModel):
     (QR decode, 1D-barcode decode, OCR'd printed digits) against EACH OTHER as well
     as against the claimed value; a disagreement between sources that were each
     legibly read is itself a REJECT-worthy tamper signal, checked before the
-    match-against-claim step. See ``validators/fastag_image/fastag_check.py``."""
+    match-against-claim step. See ``fastag_image/fastag_check.py``."""
     decision: Decision
     reason: str
     checked: bool
@@ -102,9 +102,9 @@ class FastagCheckResult(BaseModel):
 
 class AxleCountResult(BaseModel):
     """Just the axle-count piece of ``SideImageCheckResult`` — same VLM judgment
-    call (``classify_axle_count``/``decide_axle_count``), exposed standalone so it
+    call (``classify_axle_count````decide_axle_count``), exposed standalone so it
     can be tested in isolation from identity-binding/duplicate. See
-    ``validators/side_image/side_image_check.py``."""
+    ``side_image/side_image_check.py``."""
     decision: Decision
     status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
     checked: bool
@@ -121,7 +121,7 @@ class SideImageIdentityResult(BaseModel):
     ``SideImageTypeClassifier`` into vrn_visible / corner_view / pure_side_profile
     (decreasing reliability, see the module docstring), exposed standalone so it
     can be tested independent of axle-count/duplicate. See
-    ``validators/side_image/side_image_check.py``."""
+    ``side_image/side_image_check.py``."""
     decision: Decision
     checked: bool
     claimed_vrn: str
@@ -140,7 +140,7 @@ class SideImageCheckResult(BaseModel):
     detector wired) + identity-to-claimed-vehicle, routed by
     ``SideImageTypeClassifier`` into three buckets of DECREASING reliability
     (vrn_visible > corner_view > pure_side_profile — the last is NEVER a confident
-    PASS on its own, see ``validators/side_image/side_image_check.py``). Overall ``decision``
+    PASS on its own, see ``side_image/side_image_check.py``). Overall ``decision``
     is the worst of axle / identity / duplicate, same REJECT > MANUAL_REVIEW >
     PASS ordering as ``CombinedResult``."""
     decision: Decision
@@ -162,7 +162,7 @@ class CombinedResult(BaseModel):
     outright and neither Q2 nor Q3 runs). Once Q1 PASSes, Q2 and Q3 both run
     independently (neither gates the other) so a single call always returns the
     complete audit trail; the overall ``decision`` takes the worst of the two:
-    REJECT > MANUAL_REVIEW > PASS. See ``validators/combined.py``."""
+    REJECT > MANUAL_REVIEW > PASS. See ``combined.py``."""
     decision: Decision
     reason: str
     checked: bool

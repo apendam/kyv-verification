@@ -1,5 +1,5 @@
 """SigLIP 2 zero-shot classifiers — copied from
-truck_front_extractor/src/tfe/backends/real.py's ``_SigLIP``/``_SigLIPPose``/
+truck_front_extractor/src/tfe/backends/real.py's ``_SigLIP````_SigLIPPose``
 ``_SigLIPMake`` classes. One shared model serves both:
   - pose (Q1) — front/front34/side/rear, feeding the front-gate.
   - make (Q3) — zero-shot brand among a fixed Indian-truck manufacturer list.
@@ -51,7 +51,7 @@ class SigLipModel:
     def embed_image(self, image) -> np.ndarray:
         """Raw image embedding — same weights/forward-pass family as ``zero_shot``,
         but stops before comparing against any text prompt. For nearest-neighbor
-        duplicate detection (``validators/duplicate_check.py``), not classification.
+        duplicate detection (``duplicate_check.py``), not classification.
         """
         import torch
         from PIL import Image
@@ -98,7 +98,7 @@ class MakeClassifier:
 class SideImageTypeClassifier:
     """Best-effort triage for a side/axle-image upload: does it show a legible VRN
     plate, BOTH the front and side of the truck (a corner/three-quarter shot), or
-    only a pure side profile? ``validators/side_image/side_image_check.py`` routes to a
+    only a pure side profile? ``side_image/side_image_check.py`` routes to a
     different identity-binding strategy per bucket, in decreasing order of
     reliability — see that module's docstring."""
     LABELS = {

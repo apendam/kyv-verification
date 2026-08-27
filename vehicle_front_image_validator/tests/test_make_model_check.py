@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from vfiv.validators.front_image.make_model_check import decide_make_model, validate_make_model
+from vfiv.front_image.make_model_check import decide_make_model, validate_make_model
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 HAS_AWS = bool(os.environ.get("AWS_ACCESS_KEY_ID"))

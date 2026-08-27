@@ -5,7 +5,7 @@ so there was no `git log` to pull them from directly.
 
 These exist ONLY for the test/inference interface (``experiments/``) to let you compare
 the original single-VLM-call design against the real-model rewrite and against Gemini,
-side by side. Production (``validators/*.py``) does not use these.
+side by side. Production (``front_image/``, ``side_image/``, ``fastag_image/``) does not use these.
 """
 
 Q1_LEGACY_PROMPT = """You are inspecting an uploaded image for a document/image validation platform.

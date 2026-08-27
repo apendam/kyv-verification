@@ -1,5 +1,5 @@
 """Selectable Q1 backends — for the test/inference interface only; production
-(``validators/front_image/front_image.py``) is unaffected and always uses ``"real_cv"``.
+(``front_image/front_image.py``) is unaffected and always uses ``"real_cv"``.
 
   "real_cv" — production default: YOLO+SigLIP real CV gate + narrowed Claude judgment
               prompt (``front_image.classify_front_image``, unchanged).
@@ -14,8 +14,8 @@ decisioning is identical regardless of backend — only the read step differs.
 from vfiv import config
 from vfiv.backends.gemini import call_gemini_json
 from vfiv.experiments.legacy_prompts import Q1_LEGACY_PROMPT
-from vfiv.validators.base import call_vlm_json
-from vfiv.validators.front_image.front_image import classify_front_image as _classify_front_image_real_cv
+from vfiv.base import call_vlm_json
+from vfiv.front_image.front_image import classify_front_image as _classify_front_image_real_cv
 
 Q1_BACKENDS = ["real_cv", "claude", "gemini"]
 

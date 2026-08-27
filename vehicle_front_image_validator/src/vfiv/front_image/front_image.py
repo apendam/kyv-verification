@@ -19,7 +19,7 @@ from vfiv import config
 from vfiv.backends.gate import run_gate
 from vfiv.backends.image_io import load_rgb_array
 from vfiv.schemas import FrontImageResult
-from vfiv.validators.base import call_vlm_json
+from vfiv.base import call_vlm_json
 
 PROMPT = """You are inspecting an uploaded image for a document/image validation platform.
 The upload is supposed to be a photograph of the FRONT of a truck/bus, of the REAL
@@ -90,8 +90,8 @@ def decide_front_image(
     ai_reject_conf: float = config.FRONT_AI_REJECT_CONF,
 ) -> FrontImageResult:
     """Pure decision logic over an already-classified dict (``r["checked"]`` must be
-    True — see ``classify_front_image``/``classify_combined``). Split out from
-    ``validate_front_image`` so the combined single-call prompt (``validators/combined.py``)
+    True — see ``classify_front_image````classify_combined``). Split out from
+    ``validate_front_image`` so the combined single-call prompt (``combined.py``)
     can reuse this exact decisioning without re-deriving it.
 
     PASS          genuine photo · truck/bus · clear, complete FRONT view · confident

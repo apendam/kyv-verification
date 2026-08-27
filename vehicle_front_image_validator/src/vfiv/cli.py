@@ -4,22 +4,22 @@ import os
 import sys
 
 from vfiv import config
-from vfiv.validators.combined import validate_upload
-from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.fastag_image.fastag_check import check_fastag_upload
-from vfiv.validators.front_image.front_image import validate_front_image
-from vfiv.validators.front_image.make_model_check import validate_make_model
-from vfiv.validators.front_image.vrn_check import validate_vrn
-from vfiv.validators.side_image.side_image_check import check_side_image_upload
+from vfiv.combined import validate_upload
+from vfiv.duplicate_check import check_duplicate
+from vfiv.fastag_image.fastag_check import check_fastag_upload
+from vfiv.front_image.front_image import validate_front_image
+from vfiv.front_image.make_model_check import validate_make_model
+from vfiv.front_image.vrn_check import validate_vrn
+from vfiv.side_image.side_image_check import check_side_image_upload
 
 VALIDATORS = {
     "front": validate_front_image,
     "vrn": validate_vrn,
     "make_model": validate_make_model,
     "combined": validate_upload,
-    "duplicate": check_duplicate,      # not wired into "combined" — see validators/duplicate_check.py
-    "fastag": check_fastag_upload,     # not wired into "combined" — see validators/fastag_image/fastag_check.py
-    "side": check_side_image_upload,   # not wired into "combined" — see validators/side_image/side_image_check.py
+    "duplicate": check_duplicate,      # not wired into "combined" — see duplicate_check.py
+    "fastag": check_fastag_upload,     # not wired into "combined" — see fastag_image/fastag_check.py
+    "side": check_side_image_upload,   # not wired into "combined" — see side_image/side_image_check.py
 }
 def main() -> None:
     ap = argparse.ArgumentParser(description="Validate an uploaded vehicle document/image.")

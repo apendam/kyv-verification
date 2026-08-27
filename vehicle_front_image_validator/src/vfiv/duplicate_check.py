@@ -12,7 +12,7 @@ step earlier in the forward pass — no second model to load). Storage/search:
 Postgres + pgvector (``backends/vector_store.py``) — exact cosine nearest-
 neighbor search, fast even over millions of rows via an HNSW index.
 
-NOT wired into ``validators/combined.py``/``validate_upload`` yet. Call
+NOT wired into ``combined.py````validate_upload`` yet. Call
 ``check_duplicate`` alongside it (or from a batch job over recent uploads) until
 you've calibrated ``config.DUPLICATE_SIMILARITY_MIN`` against real labeled pairs
 from your own data — see the README's "Duplicate detection" section. Treat a hit

@@ -1,4 +1,4 @@
-"""Runs Q1 / Q2 / Q3 — individually (``run_q1_only``/``run_q2_only``/``run_q3_only``,
+"""Runs Q1 / Q2 / Q3 — individually (``run_q1_only````run_q2_only````run_q3_only``,
 for testing one stage in isolation) or end-to-end (``run_test_case``, Q1 -> Q2 -> Q3,
 for the test/inference interface. Mirrors ``combined.py``'s gating (Q1 must PASS before
 Q2/Q3 run; Q2 and Q3 run independently of each other; overall decision is the worst of
@@ -11,10 +11,10 @@ from vfiv import config
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.schemas import ExperimentResult
 from vfiv.schemas import FrontImageResult, VrnCheckResult
-from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.front_image.front_image import decide_front_image
-from vfiv.validators.front_image.make_model_check import _match_model
-from vfiv.validators.front_image.vrn_check import decide_vrn
+from vfiv.duplicate_check import check_duplicate
+from vfiv.front_image.front_image import decide_front_image
+from vfiv.front_image.make_model_check import _match_model
+from vfiv.front_image.vrn_check import decide_vrn
 
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
 
@@ -48,9 +48,9 @@ def run_q1_only(
     """Q1 in isolation — no VRN/make needed for the gate itself, useful for
     iterating on the front-gate backend alone. Pass BOTH ``claimed_vrn`` and
     ``upload_id`` to also run the cross-upload duplicate check
-    (``validators/duplicate_check.py``, ``image_type="front"``) and fold its
+    (``duplicate_check.py``, ``image_type="front"``) and fold its
     verdict into the returned decision — same opt-in-via-``upload_id`` pattern as
-    ``validators/side_image/side_image_check.py``'s ``check_side_image_upload``."""
+    ``side_image/side_image_check.py``'s ``check_side_image_upload``."""
     raw1 = q1_select.classify_q1(image, q1_backend, gemini_model=q1_gemini_model)
     result = _decide_q1(raw1, conf_min, ai_reject_conf)
 

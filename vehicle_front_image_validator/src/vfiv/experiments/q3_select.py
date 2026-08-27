@@ -1,5 +1,5 @@
 """Selectable Q3 backends — for the test/inference interface only; production
-(``validators/front_image/make_model_check.py``) is unaffected and always uses
+(``front_image/make_model_check.py``) is unaffected and always uses
 ``"siglip_rekognition"`` for make + ``"claude"`` for model.
 
 Make backends (each collects one or more VOTES: (source_name, extracted_make, confidence)):
@@ -27,9 +27,9 @@ from vfiv import config
 from vfiv.backends import clarifai_backend, google_vision
 from vfiv.backends.gemini import call_gemini_json
 from vfiv.experiments.legacy_prompts import Q3_LEGACY_PROMPT
-from vfiv.validators.base import call_vlm_json
-from vfiv.validators.front_image.make_model_check import classify_make as _classify_make_siglip_rekognition
-from vfiv.validators.front_image.make_model_check import classify_model as _classify_model_claude
+from vfiv.base import call_vlm_json
+from vfiv.front_image.make_model_check import classify_make as _classify_make_siglip_rekognition
+from vfiv.front_image.make_model_check import classify_model as _classify_model_claude
 
 Q3_MAKE_BACKENDS = ["siglip_rekognition", "claude", "gemini", "gcv_logo", "clarifai"]
 Q3_MODEL_BACKENDS = ["claude", "gemini"]

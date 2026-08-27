@@ -76,7 +76,7 @@ CLARIFAI_APP_ID = os.environ.get("VFIV_CLARIFAI_APP_ID", "main")
 CLARIFAI_MODEL_ID = os.environ.get("VFIV_CLARIFAI_MODEL_ID", "logo")
 
 # --- Duplicate / photo-reuse detection (cross-upload, not one of Q1/Q2/Q3) ----------
-# NOT wired into validate_upload/CombinedResult yet — see validators/duplicate_check.py.
+# NOT wired into validate_upload/CombinedResult yet — see duplicate_check.py.
 # Reuses the same SigLIP 2 weights already loaded above (SIGLIP_MODEL): one extra
 # forward-pass step that stops at the raw image embedding instead of comparing it
 # against a text prompt. No second model to load.
@@ -101,7 +101,7 @@ DUPLICATE_SIMILARITY_MIN = float(os.environ.get("VFIV_DUPLICATE_SIMILARITY_MIN",
 # an enforced constraint — any string is technically accepted as an image_type.
 IMAGE_TYPES = ["front", "side", "fastag"]
 
-# --- FASTag validator (validators/fastag_image/fastag_check.py) ----------------------------
+# --- FASTag validator (fastag_image/fastag_check.py) ----------------------------
 # Printed-digit OCR fuzz budget -- same idea as VRN_MAX_CONFUSABLE_EDITS, but only
 # ever the last-resort match arm: the QR/barcode decodes are exact and checked first.
 FASTAG_OCR_MAX_CONFUSABLE_EDITS = 1
@@ -111,7 +111,7 @@ FASTAG_OCR_MAX_CONFUSABLE_EDITS = 1
 # call, so this only affects the OCR fallback arm. See backends/fastag_reader.py.
 FASTAG_OCR_BACKEND = os.environ.get("VFIV_FASTAG_OCR_BACKEND", "rekognition")
 
-# --- Side/axle-image validator (validators/side_image/side_image_check.py) ----------------
+# --- Side/axle-image validator (side_image/side_image_check.py) ----------------
 # No dedicated axle/wheel detector is wired (would need a custom-trained model and
 # a labeled dataset) -- axle count is a narrowed VLM judgment call instead, gated by
 # its own reported confidence. Which model reads it is selectable -- "claude"

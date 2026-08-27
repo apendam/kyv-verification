@@ -5,7 +5,7 @@ combinations can be compared side by side. Uses Gradio, matching
 ecosystem.
 
 This is a TESTING tool, not the production entry point — the production entry point is
-``vfiv.validate_upload`` (``validators/combined.py``), which always uses today's default
+``vfiv.validate_upload`` (``combined.py``), which always uses today's default
 backends. Run with:
 
     python -m vfiv.webapp
@@ -25,9 +25,9 @@ from vfiv.backends.fastag_reader import FASTAG_OCR_BACKENDS, parse_qr_payload
 from vfiv.backends.vector_store import DuplicateStoreError, count_by_type
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.runner import run_q1_only, run_q2_only, run_q3_only, run_test_case
-from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.fastag_image.fastag_check import check_fastag_upload, classify_fastag_upload
-from vfiv.validators.side_image.side_image_check import (
+from vfiv.duplicate_check import check_duplicate
+from vfiv.fastag_image.fastag_check import check_fastag_upload, classify_fastag_upload
+from vfiv.side_image.side_image_check import (
     AXLE_COUNT_BACKENDS,
     check_axle_count,
     check_side_identity,
@@ -1066,7 +1066,7 @@ with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo
         # --- Reference-image library --------------------------------------------
         with gr.Tab("Reference Images"):
             gr.Markdown(
-                "Seed the duplicate-detection corpus (`validators/duplicate_check.py`) with known-good "
+                "Seed the duplicate-detection corpus (`duplicate_check.py`) with known-good "
                 "truck images, or check a new image against what's already stored — **without** running "
                 "Q1/Q2/Q3. `front` / `side` / `fastag` are separate corpora and never compared against "
                 "each other. Needs `VFIV_PGVECTOR_DSN` set to a reachable Postgres+pgvector instance."

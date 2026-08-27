@@ -18,9 +18,9 @@ two: REJECT > MANUAL_REVIEW > PASS.
 """
 from vfiv import config
 from vfiv.schemas import CombinedResult
-from vfiv.validators.front_image.front_image import validate_front_image
-from vfiv.validators.front_image.make_model_check import validate_make_model
-from vfiv.validators.front_image.vrn_check import validate_vrn
+from vfiv.front_image.front_image import validate_front_image
+from vfiv.front_image.make_model_check import validate_make_model
+from vfiv.front_image.vrn_check import validate_vrn
 
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
 

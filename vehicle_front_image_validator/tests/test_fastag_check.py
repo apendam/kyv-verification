@@ -1,7 +1,7 @@
 import pytest
 
 from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payload, read_fastag
-from vfiv.validators.fastag_image.fastag_check import decide_fastag
+from vfiv.fastag_image.fastag_check import decide_fastag
 
 
 def _read(codes=None, printed_id=None) -> dict:

@@ -3,7 +3,7 @@ import os
 import pytest
 
 from vfiv.backends.vector_store import DuplicateMatch
-from vfiv.validators.duplicate_check import check_duplicate, decide_duplicate
+from vfiv.duplicate_check import check_duplicate, decide_duplicate
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 HAS_PGVECTOR = bool(os.environ.get("VFIV_PGVECTOR_DSN"))
@@ -71,7 +71,7 @@ def test_manual_review_when_pgvector_not_configured(monkeypatch):
     """Backend not configured (no VFIV_PGVECTOR_DSN) -> checked=False, surfaced as
     MANUAL_REVIEW rather than crashing -- same posture as the AWS-credential-error
     path in vrn_check.py."""
-    import vfiv.validators.duplicate_check as duplicate_check_module
+    import vfiv.duplicate_check as duplicate_check_module
     from vfiv.backends.vector_store import DuplicateStoreError
 
     class _FakeSiglip:
@@ -95,7 +95,7 @@ def test_manual_review_when_embedding_model_not_installed(monkeypatch):
     """A venv missing torch/transformers (SigLIP's real dependencies) must not
     crash the UI with a raw ImportError -- it should degrade the same way a
     missing pgvector DSN does."""
-    import vfiv.validators.duplicate_check as duplicate_check_module
+    import vfiv.duplicate_check as duplicate_check_module
 
     class _FakeSiglip:
         def embed_image(self, image):
@@ -113,7 +113,7 @@ def test_image_type_defaults_to_front_and_is_passed_through(monkeypatch):
     """The image_type argument must reach find_similar/store_embedding unchanged
     -- this is what keeps front/side/fastag from ever being compared against
     each other."""
-    import vfiv.validators.duplicate_check as duplicate_check_module
+    import vfiv.duplicate_check as duplicate_check_module
 
     seen = {}
 

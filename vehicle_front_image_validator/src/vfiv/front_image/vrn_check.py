@@ -54,8 +54,8 @@ def decide_vrn(
     max_confusable_edits: int = config.VRN_MAX_CONFUSABLE_EDITS,
 ) -> VrnCheckResult:
     """Pure decision logic over an already-read dict (``r["checked"]`` must be True —
-    see ``classify_plate``/``classify_combined``). Split out from ``validate_vrn`` so
-    the combined single-call prompt (``validators/combined.py``) can reuse this exact
+    see ``classify_plate````classify_combined``). Split out from ``validate_vrn`` so
+    the combined single-call prompt (``combined.py``) can reuse this exact
     decisioning without re-deriving it.
 
     PASS          MATCH — confusion-aware edit distance <= max_confusable_edits

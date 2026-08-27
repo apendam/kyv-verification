@@ -33,7 +33,7 @@ from vfiv.backends.image_io import load_rgb_array
 from vfiv.backends.rekognition import RekognitionCredentialError, detect_plate
 from vfiv.backends.siglip import get_make_classifier
 from vfiv.schemas import MakeModelCheckResult
-from vfiv.validators.base import call_vlm_json
+from vfiv.base import call_vlm_json
 
 MODEL_PROMPT = """You are identifying the MODEL designation of an Indian truck/bus from its
 front view, for a document-validation platform. The manufacturer (make) is read

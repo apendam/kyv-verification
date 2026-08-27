@@ -1,5 +1,5 @@
 """Postgres + pgvector nearest-neighbor store for cross-upload duplicate detection
-(see ``validators/duplicate_check.py``). Real code, degrading with a clear error —
+(see ``duplicate_check.py``). Real code, degrading with a clear error —
 same pattern as ``backends/rekognition.py``'s credential handling — until
 ``VFIV_PGVECTOR_DSN`` is set. Not wired into production by default.
 

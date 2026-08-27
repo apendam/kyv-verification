@@ -2,7 +2,7 @@
 ``_QwenVLM`` class. Real code, NOT run live in this environment: the model is ~16GB and
 documented as taking minutes/image on CPU (no GPU here) — wiring it now means it's ready
 to point at a GPU box in production without further porting, but Q3's model reading
-defaults to Claude (see validators/front_image/make_model_check.py) until then.
+defaults to Claude (see front_image/make_model_check.py) until then.
 
 Opt in explicitly once a GPU box is available:
     from vfiv.backends.qwen import get_qwen
