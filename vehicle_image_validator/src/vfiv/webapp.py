@@ -626,9 +626,9 @@ def _gemini_model_row(*, q1=False, q2=False, q3_make=False, q3_model=False):
     return comps
 
 
-with gr.Blocks(title="Vehicle Front-Image Validator — Test Interface") as demo:
+with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
     gr.Markdown(
-        "# Vehicle Front-Image Validator — Test Interface\n"
+        "# Vehicle Image Validator — Test Interface\n"
         "Test **one stage at a time** (fastest way to iterate on a single backend) or "
         "**end-to-end**. The **production** entry point (`vfiv.validate_upload`) always "
         "uses today's defaults regardless of what you pick here."

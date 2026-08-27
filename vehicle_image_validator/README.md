@@ -1,9 +1,9 @@
-# Vehicle Front-Image Validator
+# Vehicle Image Validator
 
 Image validation for an internal document/image-validation SaaS platform, designed to
-be deployed independently in production. Given an uploaded image that's claimed to be
-the **front of a truck or bus**, decide whether it genuinely is one — before any
-downstream document processing runs on it.
+be deployed independently in production. Given an uploaded image claimed to be one of a
+truck/bus's **front**, **side/axle**, or **FASTag sticker** photos, decide whether it
+genuinely is one — before any downstream document processing runs on it.
 
 Each check calls whichever real model actually does that job best — Claude is used
 only for the judgment calls no dedicated CV/OCR model can do (screenshot detection,
@@ -17,8 +17,9 @@ matching code is installed as an actual dependency — see Run below).
 | **Q1 — Front image gate** | YOLOv8 (vehicle) + SigLIP 2 (pose) + Claude (screenshot/photo-of-photo/AI-generated) | ✅ |
 | **Q2 — VRN + plate colour** | AWS Rekognition (text detection) + HSV (colour) — no Claude at all | ✅ |
 | **Q3 — Make + model** | SigLIP 2 + Rekognition (make, two independent votes) + Claude (model) | ✅ |
+| **Side/Axle image** | Claude/Gemini (axle count) + SigLIP (identity binding) + pgvector (duplicate check) | ✅ |
+| **FASTag image** | pyzbar (QR/barcode decode) + Rekognition/Claude/Gemini (printed-digit OCR) | ✅ |
 | **Test/inference interface** | Gradio UI — individual + bulk, backend-selectable per stage | ✅ |
-| Side image, Fastag image | — | planned |
 
 ## Origin — where each model came from
 
