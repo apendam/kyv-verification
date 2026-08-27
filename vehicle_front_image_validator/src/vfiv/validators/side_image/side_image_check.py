@@ -59,7 +59,7 @@ from vfiv.backends.vehicle import get_vehicle_detector
 from vfiv.schemas import AxleCountResult, SideImageCheckResult, SideImageIdentityResult
 from vfiv.validators.base import call_vlm_json
 from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.vrn_check import validate_vrn
+from vfiv.validators.front_image.vrn_check import validate_vrn
 
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
 

@@ -9,7 +9,7 @@ Three independent representations of the tag's identity live on the sticker:
   - the human-readable digits printed below the barcode — read via OCR, the only
     genuinely fuzzy/error-prone source of the three
 
-``validators/fastag_check.py`` cross-checks all three against each other as well as
+``validators/fastag_image/fastag_check.py`` cross-checks all three against each other as well as
 against the claimed value — this module only does the raw reads, no decisioning.
 
 The barcode/QR decode is a deterministic algorithm (pyzbar/zbar), not a model call —
@@ -171,7 +171,7 @@ def read_fastag(
 
     Raises ``FastagReadError`` on a credential/availability failure for whichever
     backend was selected — a photo with nothing legible is still a normal result
-    (all fields None/empty), not an error; ``validators/fastag_check.py`` decides
+    (all fields None/empty), not an error; ``validators/fastag_image/fastag_check.py`` decides
     what that means.
     """
     if backend not in FASTAG_OCR_BACKENDS:

@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from vfiv.validators.vrn_check import decide_vrn, validate_vrn
+from vfiv.validators.front_image.vrn_check import decide_vrn, validate_vrn
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 HAS_AWS = bool(os.environ.get("AWS_ACCESS_KEY_ID"))
@@ -36,7 +36,7 @@ def test_manual_review_when_aws_credentials_invalid(monkeypatch):
     caches its default session process-wide, so injecting fake env-var credentials
     after a real client already exists in the same process doesn't reliably force a
     fresh (failing) credential resolution."""
-    import vfiv.validators.vrn_check as vrn_check_module
+    import vfiv.validators.front_image.vrn_check as vrn_check_module
     from vfiv.backends.rekognition import RekognitionCredentialError
 
     def _fake_detect_plate(image):

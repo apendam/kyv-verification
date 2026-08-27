@@ -1,5 +1,5 @@
 """Selectable Q2 backends — for the test/inference interface only; production
-(``validators/vrn_check.py``) is unaffected and always uses ``"rekognition"``.
+(``validators/front_image/vrn_check.py``) is unaffected and always uses ``"rekognition"``.
 
   "rekognition" — production default: AWS Rekognition + HSV colour classifier
                   (``vrn_check.classify_plate``, unchanged).
@@ -15,7 +15,7 @@ from vfiv import config
 from vfiv.backends.gemini import call_gemini_json
 from vfiv.experiments.legacy_prompts import Q2_LEGACY_PROMPT
 from vfiv.validators.base import call_vlm_json
-from vfiv.validators.vrn_check import classify_plate as _classify_plate_rekognition
+from vfiv.validators.front_image.vrn_check import classify_plate as _classify_plate_rekognition
 
 Q2_BACKENDS = ["rekognition", "claude", "gemini"]
 

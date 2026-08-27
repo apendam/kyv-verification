@@ -98,7 +98,7 @@ class MakeClassifier:
 class SideImageTypeClassifier:
     """Best-effort triage for a side/axle-image upload: does it show a legible VRN
     plate, BOTH the front and side of the truck (a corner/three-quarter shot), or
-    only a pure side profile? ``validators/side_image_check.py`` routes to a
+    only a pure side profile? ``validators/side_image/side_image_check.py`` routes to a
     different identity-binding strategy per bucket, in decreasing order of
     reliability — see that module's docstring."""
     LABELS = {

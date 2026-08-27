@@ -26,8 +26,8 @@ from vfiv.backends.vector_store import DuplicateStoreError, count_by_type
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.runner import run_q1_only, run_q2_only, run_q3_only, run_test_case
 from vfiv.validators.duplicate_check import check_duplicate
-from vfiv.validators.fastag_check import check_fastag_upload, classify_fastag_upload
-from vfiv.validators.side_image_check import (
+from vfiv.validators.fastag_image.fastag_check import check_fastag_upload, classify_fastag_upload
+from vfiv.validators.side_image.side_image_check import (
     AXLE_COUNT_BACKENDS,
     check_axle_count,
     check_side_identity,

@@ -163,7 +163,7 @@ python -m vfiv.webapp   # → http://127.0.0.1:7860
     into vrn_visible/corner_view/pure_side_profile), **Duplicate check** (scoped to the
     `"side"` corpus), and **End-to-end** (the combined `check_side_image_upload`, worst
     of all three). The first three are independently unit-testable — see
-    `validators/side_image_check.py`.
+    `validators/side_image/side_image_check.py`.
   - **FASTag** — **QR / Barcode read** and **Printed digits (OCR)** show the raw
     decode/read only, with no pass/fail of their own: the actual fraud-check
     (`decide_fastag`) needs all three sources together to judge cross-source
@@ -288,15 +288,18 @@ src/vfiv/
     clarifai_backend.py              # Clarifai logo model (experimentation only, no key configured)
     vector_store.py                  # pgvector nearest-neighbor store (duplicate detection, see below)
     fastag_reader.py                  # barcode/QR decode + Rekognition text read (FASTag check, see below)
-  validators/
+  validators/                  # grouped by which uploaded IMAGE each check runs against
     base.py                    # shared Claude image+prompt -> JSON plumbing (Q1's judgment calls, Q3's model read)
-    front_image.py             # Q1: real CV gate + narrowed Claude prompt -> decide_front_image()
-    vrn_check.py                # Q2: Rekognition + HSV -> decide_vrn() (no Claude)
-    make_model_check.py          # Q3: SigLIP+Rekognition (make) + Claude (model) -> decide_make_model()
     combined.py                  # single entry point: Q1 gates Q2+Q3, worst-of severity ordering
     duplicate_check.py            # cross-upload near-duplicate check, NOT wired into combined.py (see below)
-    fastag_check.py                # FASTag sticker check, NOT wired into combined.py (see below)
-    side_image_check.py             # side/axle-image check, NOT wired into combined.py (see below)
+    front_image/                  # checks that run against the FRONT photo
+      front_image.py                # Q1: real CV gate + narrowed Claude prompt -> decide_front_image()
+      vrn_check.py                   # Q2: Rekognition + HSV -> decide_vrn() (no Claude)
+      make_model_check.py             # Q3: SigLIP+Rekognition (make) + Claude (model) -> decide_make_model()
+    side_image/                   # checks that run against the SIDE/AXLE photo
+      side_image_check.py            # axle count + identity binding + duplicate, NOT wired into combined.py
+    fastag_image/                 # checks that run against the FASTAG sticker photo
+      fastag_check.py                # QR/barcode/OCR cross-check, NOT wired into combined.py
   experiments/                  # test/inference interface's backend-selection layer (not production)
     legacy_prompts.py            # reconstructed original all-Claude Q1/Q2/Q3 prompts
     q1_select.py                  # Q1: real_cv | claude | gemini
@@ -371,7 +374,7 @@ what the webapp's **Q1** tab calls) accepts the same optional `claimed_vrn` +
 and fold its verdict into Q1's own decision (worst-of, same REJECT >
 MANUAL_REVIEW > PASS ordering as everywhere else); a suspected duplicate
 surfaces as `duplicate_is_suspect=True` on the result. Wired at the
-test/webapp layer (rather than inside `validators/front_image.py`'s
+test/webapp layer (rather than inside `validators/front_image/front_image.py`'s
 production `validate_front_image`) so it works with whichever Q1 backend
 you're comparing (`real_cv` | `claude` | `gemini`).
 
@@ -407,7 +410,7 @@ for the first time.
 
 ## FASTag check (not wired into `validate_upload`)
 
-`check_fastag_upload()` (`validators/fastag_check.py`) validates a close-up photo of
+`check_fastag_upload()` (`validators/fastag_image/fastag_check.py`) validates a close-up photo of
 the FASTag sticker itself — three independent, real reads of the tag's identity,
 cross-checked against each other as well as against the claimed value:
 
@@ -436,7 +439,7 @@ top of whichever OCR backend's credentials you're using (AWS by default).
 
 ## Side/axle-image check (not wired into `validate_upload`)
 
-`check_side_image_upload()` (`validators/side_image_check.py`) validates the side
+`check_side_image_upload()` (`validators/side_image/side_image_check.py`) validates the side
 image used for axle-count verification, with two goals:
 
 **Axle count** — no dedicated axle/wheel detector is wired (would need a custom-

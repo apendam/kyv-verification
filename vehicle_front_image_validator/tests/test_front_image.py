@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from vfiv.validators.front_image import validate_front_image
+from vfiv.validators.front_image.front_image import validate_front_image
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 
