@@ -83,15 +83,45 @@ from vfiv.front_image.vrn_check import validate_vrn
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
 
 AXLE_PROMPT = """You are counting axles on an uploaded side-profile photo of a truck/bus,
-for a document-validation platform. Count distinct AXLES (a pair of wheels sharing one
-axle line), NOT individual wheels — dual/twin wheels mounted together on one axle still
-count as ONE axle. If a lift/tag axle appears raised off the ground (not touching the
-road), still include it in the total count, but set "lift_axle_suspected" to true. If the
-full wheelbase isn't visible (cropped, obstructed, mid-corner shot), give your best count
-from what IS visible rather than refusing, and say so in "reason".
+for a document-validation platform. Real commercial vehicles here range from 2 to 7
+axles — get this right across that whole range, not just the common 2-axle case.
 
-Reply with STRICT JSON only:
-{"axle_count":<int>,"confidence":0-100,"lift_axle_suspected":true|false,"reason":"<short>"}"""
+An AXLE is one wheel-bearing line running across the vehicle's width. A WHEEL is a
+single tire. These are NOT the same thing:
+- Dual/twin wheels: two tires mounted side-by-side on the SAME side of the SAME axle
+  (common on load-bearing axles for heavier trucks). This is still ONE axle, not two —
+  a rear axle with dual wheels has 4 wheels total (2 per side) but is 1 axle.
+- A tandem or tridem bogie: two or three axles mounted close together as a group
+  (common at the rear of heavier trucks, to spread axle load). EACH axle in the group
+  IS a separate axle, even though they sit close together and can look like one wide
+  axle or a single "unit" at a glance. Look for evenly-spaced distinct wheel positions
+  within the cluster — each one is its own axle, whether or not it also has dual wheels.
+- A lift/tag axle: can be raised off the road when unloaded. If it's visibly raised
+  (not touching the ground) in this photo, still include it in the total count, but set
+  "lift_axle_suspected" to true.
+- A steering axle: the frontmost axle, which turns for steering. Most trucks have one,
+  but some heavier multi-axle trucks have twin-steer (two axles up front) — don't assume
+  there's only ever one axle at the front just because it's usually true.
+
+Worked examples across the range (for calibration only — don't assume the vehicle in
+front of you matches one of these):
+- 2 axles: one front (steer) axle + one rear axle with dual wheels. 6 wheels, 2 axles.
+- 3 axles: one front axle + a 2-axle rear tandem bogie, each with dual wheels. Up to 10
+  wheels, 3 axles.
+- 4-7 axles: a longer rear bogie (tridem or more), sometimes combined with twin-steer
+  front axles. Count every distinct axle LINE, whether isolated or clustered in a bogie.
+
+If the full wheelbase isn't visible (cropped, obstructed, mid-corner shot), give your
+best count from what IS visible rather than refusing, and say so in "reason".
+
+Before answering, mentally walk the wheelbase front-to-rear and describe each axle
+position you identify and how many wheels sit at it (e.g. "front: 1 axle, single wheels;
+rear: 2-axle tandem bogie, dual wheels each -> 3 axles total"). Put that walk-through in
+"reason" FIRST, then give the final axle_count based on it — do not just report however
+many wheels you can see.
+
+Reply with STRICT JSON only, in this field order:
+{"reason":"<short position-by-position walk-through, then your conclusion>","axle_count":<int>,"confidence":0-100,"lift_axle_suspected":true|false}"""
 
 
 def _worst_decision(*decisions: str) -> str:
@@ -137,7 +167,7 @@ def classify_axle_count(
     resolve from a single 2D photo. ``backend`` — "claude" (default) | "gemini" —
     same prompt either way, only which model reads it changes."""
     if backend == "claude":
-        r = call_vlm_json(image, AXLE_PROMPT, model or config.VLM_MODEL, max_tokens=200)
+        r = call_vlm_json(image, AXLE_PROMPT, model or config.VLM_MODEL, max_tokens=400)
     elif backend == "gemini":
         from vfiv.backends.gemini import call_gemini_json
         r = call_gemini_json(image, AXLE_PROMPT, model=model)

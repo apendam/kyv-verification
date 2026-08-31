@@ -483,8 +483,14 @@ trained model and a labeled dataset); this is a narrowed VLM judgment call inste
 gated by its own reported confidence. **Backend-selectable**: `backend="claude"`
 (default) | `"gemini"` — same prompt either way, only which model reads it changes.
 Known, real limitations a single 2D photo can't fully resolve: lift/tag axles
-raised off the ground, and dual/twin wheels on one axle (2 wheels != 2 axles) — the
-prompt asks the model to flag suspected lift axles rather than silently guess.
+raised off the ground, and dual/twin wheels vs. tandem/tridem bogies (a genuine 2-4
+axle group closely spaced together, vs. one axle's dual wheels) being confused for
+each other — confirmed on a real upload during manual testing (a genuine 2-axle
+truck's dual rear wheels misread as a third axle, at 95% confidence). The prompt
+(`AXLE_PROMPT`, covering the full realistic 2-7 axle range, not just the 2-axle
+case) asks the model to walk the wheelbase front-to-rear and describe each axle
+position before giving a final count, and to flag suspected lift axles, rather
+than silently guessing from a wheel count.
 
 **Identity-to-claimed-vehicle** — does this side photo belong to the SAME truck as
 the claimed VRN/make? Routed by `SideImageTypeClassifier`
