@@ -116,6 +116,19 @@ single tire. These are NOT the same thing:
   but some heavier multi-axle trucks have twin-steer (two axles up front) — don't assume
   there's only ever one axle at the front just because it's usually true.
 
+CRITICAL — count ONLY what you can visually confirm in THIS specific photo, never what
+a truck brand/model "typically" has. If you recognize the make/model (e.g. "this looks
+like a Tata LPT 1918"), do NOT use that recognition to infer a typical axle
+configuration (e.g. "...which usually runs 6x2") — this specific vehicle's real,
+registered configuration may be a lighter or heavier trim than the class norm, and this
+platform exists precisely to catch that gap, not assume it away. For every axle you
+count, you must be able to point to a specific visual feature that establishes it as a
+distinct axle position — a separate leaf-spring/suspension mount, a visible gap between
+wheel sets, a distinct axle housing — not a general expectation of "trucks like this
+usually have N axles." If your only justification for an axle is what's typical for the
+vehicle's class rather than something you can point to in the pixels in front of you,
+do not count it — lower your confidence and note the ambiguity in "reason" instead.
+
 Worked examples across the range (for calibration only — don't assume the vehicle in
 front of you matches one of these):
 - 2 axles: one front (steer) axle + one rear axle with dual wheels. 6 wheels, 2 axles.
@@ -128,10 +141,14 @@ If the full wheelbase isn't visible (cropped, obstructed, mid-corner shot), give
 best count from what IS visible rather than refusing, and say so in "reason".
 
 Before answering, mentally walk the wheelbase front-to-rear and describe each axle
-position you identify and how many wheels sit at it (e.g. "front: 1 axle, single wheels;
-rear: 2-axle tandem bogie, dual wheels each -> 3 axles total"). Put that walk-through in
+position you identify, how many wheels sit at it, AND the specific visual feature that
+tells you it's a distinct axle (not "typical for this model") (e.g. "front: 1 axle,
+single wheels; rear: a single wheel cluster with dual wheels, one visible leaf-spring
+mount -> 2 axles total" — or, if genuinely a bogie, "...two separate leaf-spring mounts
+visible with a gap between wheel sets -> 3 axles total"). Put that walk-through in
 "reason" FIRST, then give the final axle_count based on it — do not just report however
-many wheels you can see.
+many wheels you can see, and do not pad the count with an axle you inferred from the
+vehicle's class rather than saw.
 
 Reply with STRICT JSON only, in this field order:
 {"reason":"<short position-by-position walk-through, then your conclusion>","axle_count":<int>,"confidence":0-100,"lift_axle_suspected":true|false}"""

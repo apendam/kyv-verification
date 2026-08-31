@@ -483,14 +483,20 @@ trained model and a labeled dataset); this is a narrowed VLM judgment call inste
 gated by its own reported confidence. **Backend-selectable**: `backend="claude"`
 (default) | `"gemini"` — same prompt either way, only which model reads it changes.
 Known, real limitations a single 2D photo can't fully resolve: lift/tag axles
-raised off the ground, and dual/twin wheels vs. tandem/tridem bogies (a genuine 2-4
+raised off the ground, dual/twin wheels vs. tandem/tridem bogies (a genuine 2-4
 axle group closely spaced together, vs. one axle's dual wheels) being confused for
-each other — confirmed on a real upload during manual testing (a genuine 2-axle
-truck's dual rear wheels misread as a third axle, at 95% confidence). The prompt
+each other, and the model substituting brand/model prior knowledge for what's
+actually visible — all three confirmed on real uploads during manual testing: a
+genuine 2-axle truck's dual rear wheels misread as a third axle at 95% confidence,
+and on a retry, the model explicitly justified a second rear axle by reasoning
+"this looks like a Tata LPT 1918, which typically runs 6x2" — the vehicle's own
+RC-derived class said 2 axles, but the model overrode that with a generic
+assumption about the truck family rather than what was in the photo. The prompt
 (`AXLE_PROMPT`, covering the full realistic 2-7 axle range, not just the 2-axle
-case) asks the model to walk the wheelbase front-to-rear and describe each axle
-position before giving a final count, and to flag suspected lift axles, rather
-than silently guessing from a wheel count.
+case) asks the model to walk the wheelbase front-to-rear, cite the specific visual
+feature (not "typical for this model") behind each axle it counts, and flag
+suspected lift axles, rather than silently guessing from a wheel count or a class
+assumption.
 
 **Identity-to-claimed-vehicle** — does this side photo belong to the SAME truck as
 the claimed VRN/make? Routed by `SideImageTypeClassifier`
