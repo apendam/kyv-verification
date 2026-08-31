@@ -291,17 +291,24 @@ def _decoded_codes_detail(read):
     }
 
 
-def run_fastag_raw_individual(image, claimed_fastag_id=None, claimed_bank_code=None):
+def run_fastag_raw_individual(image, backend, gemini_model, claimed_fastag_id=None, claimed_bank_code=None):
     """QR/barcode decode -- always shows the raw decode. The full cross-source
     fraud check (decide_fastag, needing all three sources together to judge
     tamper-consistency) still only lives in the End-to-end tab; but with a
     claimed Tag ID, this now ALSO runs the QR-only verdict (exact match against
     the QR's decoded tag id, see decide_qr_only) -- narrower than the full
     check, but a real pass/fail on its own. Leave the Tag ID blank for the old
-    raw-read-only behaviour."""
+    raw-read-only behaviour.
+
+    The QR/barcode decode itself is unaffected by ``backend`` (it's a
+    deterministic algorithm, not a model call) -- but classify_fastag_upload
+    ALSO reads the printed digits internally regardless of which tab is asking,
+    so ``backend`` still needs to be threaded through here to avoid always
+    defaulting to "rekognition" (and its AWS dependency) even when the shared
+    dropdown above says otherwise."""
     if image is None:
         return "### Upload an image first.", {}
-    r = classify_fastag_upload(image)
+    r = classify_fastag_upload(image, backend=backend, vlm_model=gemini_model if backend == "gemini" else None)
     if not r.get("checked"):
         return f"### Read unavailable\n\n{r.get('error', '?')}", {}
     detail = _decoded_codes_detail(r["read"])
@@ -741,7 +748,8 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                             fastag_raw_json_out = gr.JSON(label="Full result")
                     fastag_raw_run_btn.click(
                         run_fastag_raw_individual,
-                        inputs=[fastag_raw_image_in, fastag_raw_tagid_in, fastag_raw_bank_in],
+                        inputs=[fastag_raw_image_in, fastag_dd, fastag_gm_dd,
+                               fastag_raw_tagid_in, fastag_raw_bank_in],
                         outputs=[fastag_raw_decision_out, fastag_raw_json_out],
                     )
 
