@@ -264,22 +264,28 @@ def decide_axle_count(
     conf_min: float = config.AXLE_COUNT_CONF_MIN,
 ) -> dict:
     """Pure decision logic over an already-read dict — MATCH/MISMATCH/UNREADABLE,
-    same vocabulary as Q2/Q3's ``VerificationStatus``."""
+    same vocabulary as Q2/Q3's ``VerificationStatus``. Every branch appends the
+    model's own ``r["reason"]`` (its position-by-position wheelbase walk-through,
+    per ``AXLE_PROMPT``) to the decision reason -- without this, a REJECT/PASS
+    only ever showed "axle count N != claimed M", with the model's actual
+    explanation for *why* it counted N silently discarded, making a wrong count
+    impossible to debug from the result alone."""
+    read_reason = r.get("reason", "")
     if r["axle_confidence"] < conf_min:
         return {
             "status": "UNREADABLE", "decision": "MANUAL_REVIEW",
             "reason": (f"axle read confidence {r['axle_confidence']:.0f}% "
-                       f"< {conf_min:.0f}% — needs human count"),
+                       f"< {conf_min:.0f}% — needs human count ({read_reason})"),
         }
     if r["axle_count"] == claimed_axle_count:
         note = " (lift axle suspected — verify load state)" if r.get("lift_axle_suspected") else ""
         return {
             "status": "MATCH", "decision": "PASS",
-            "reason": f"axle count {r['axle_count']} matches claimed {claimed_axle_count}{note}",
+            "reason": f"axle count {r['axle_count']} matches claimed {claimed_axle_count}{note} ({read_reason})",
         }
     return {
         "status": "MISMATCH", "decision": "REJECT",
-        "reason": f"axle count {r['axle_count']} != claimed {claimed_axle_count}",
+        "reason": f"axle count {r['axle_count']} != claimed {claimed_axle_count} ({read_reason})",
     }
 
 
