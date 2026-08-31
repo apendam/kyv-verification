@@ -24,20 +24,39 @@ docstring for why this has to live in code, same reasoning applies here):
      a. vrn_visible       -> re-run Q2's own VRN detector/matcher on this image
                              (strongest — exact identity, reuses ``vrn_check.py``
                              as-is, no new logic).
-     b. corner_view       -> make/model match (reuses Q3's SigLIP classifier) PLUS
-                             a direct SigLIP embedding cosine-similarity between
+     b. corner_view       -> a direct SigLIP embedding cosine-similarity between
                              this crop and the claimed truck's OWN on-file front
                              photo — a 1:1 pairwise compare, NOT a vector-DB
-                             nearest-neighbor search. UNCALIBRATED: a general
-                             embedding is trained for semantic similarity, not
-                             individual-vehicle re-identification, so it may not
-                             reliably separate "same truck, different angle" from
+                             nearest-neighbor search. No make check here at all
+                             (see below for why) — without a
+                             ``front_reference_image`` there's simply nothing to
+                             compare against, so this bucket is MANUAL_REVIEW
+                             ("unverifiable") rather than falling back to a
+                             weaker signal. UNCALIBRATED: a general embedding is
+                             trained for semantic similarity, not individual-
+                             vehicle re-identification, so it may not reliably
+                             separate "same truck, different angle" from
                              "different truck, same make/model/colour" — validate
                              ``config.SIDE_IMAGE_SIMILARITY_MIN`` against real
-                             labeled pairs before trusting it.
-     c. pure_side_profile  -> make/model match ONLY. The individual-vehicle
-                             question is NOT solved here — this is the genuinely
-                             open piece flagged in the design discussion, not an
+                             labeled pairs before trusting it. Now this bucket's
+                             ONLY signal (see below), so that validation matters
+                             more than it used to.
+     c. pure_side_profile  -> make/model match ONLY (reuses Q3's SigLIP zero-shot
+                             classifier) — this is the ONE bucket that still uses
+                             it, since there's nothing else to go on for a bare
+                             side profile (no plate, no front grille, no
+                             embedding to compare). Deliberately NOT used in
+                             corner_view any more: it's a coarse, brand-only
+                             zero-shot read (compares the image against 8 fixed
+                             brand-name text prompts, never actually reads
+                             painted logos/text) that can misfire between
+                             visually-similar cab shapes across manufacturers —
+                             see ``backends/siglip.py``'s ``MakeClassifier`` — so
+                             it should never be the thing that gates a bucket
+                             that has a stronger identity signal available. The
+                             individual-vehicle question is NOT solved here
+                             either way — this is the genuinely open piece
+                             flagged in the design discussion, not an
                              integration task. A match at this level is capped at
                              MANUAL_REVIEW, never a confident PASS, because two
                              different trucks of the same make/model/colour would
@@ -147,34 +166,38 @@ def _identity_via_vrn(image, claimed_vrn: str) -> tuple[str, str, dict]:
 
 
 def _identity_via_corner_view(
-    image, claimed_make: str, front_reference_image,
+    image, front_reference_image,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
 ) -> tuple[str, str, dict]:
+    """Identity here rests entirely on a direct 1:1 SigLIP embedding comparison
+    against this truck's OWN on-file front photo -- a much stronger signal than the
+    generic 8-brand make classifier (see ``_identity_via_pure_side_profile``),
+    which can't tell THIS Tata from any other Tata, only "Tata-shaped or not" (and
+    not even reliably that -- see MakeClassifier's docstring). No make check here
+    at all; without a ``front_reference_image`` there is nothing to compare
+    against, so identity is simply unverifiable from a corner view alone."""
+    detail = {"bucket": "corner_view", "front_similarity": None}
+
+    if front_reference_image is None:
+        return ("MANUAL_REVIEW",
+                "[corner_view] no front reference photo supplied — identity isn't "
+                "verifiable from a corner view alone", detail)
+
     arr = load_rgb_array(image)
     det = get_vehicle_detector().best_truck(arr)
     crop = arr[det.bbox[1]:det.bbox[3], det.bbox[0]:det.bbox[2]] if det is not None else arr
 
-    siglip_make = get_make_classifier().predict(crop)
-    make_match = match_make(siglip_make["make"], claimed_make)
+    siglip = get_siglip_model()
+    emb_a = siglip.embed_image(crop)
+    emb_b = siglip.embed_image(load_rgb_array(front_reference_image))
+    similarity = _cosine(emb_a, emb_b)
+    detail["front_similarity"] = similarity
 
-    similarity = None
-    if front_reference_image is not None:
-        siglip = get_siglip_model()
-        emb_a = siglip.embed_image(crop)
-        emb_b = siglip.embed_image(load_rgb_array(front_reference_image))
-        similarity = _cosine(emb_a, emb_b)
-
-    detail = {"bucket": "corner_view", "make_read": siglip_make["make"],
-              "make_matched": make_match.matched, "front_similarity": similarity}
-
-    if not make_match.matched:
-        return "REJECT", f"[corner_view] make mismatch (read '{siglip_make['make']}')", detail
-    if similarity is not None and similarity < similarity_min:
+    if similarity < similarity_min:
         return ("MANUAL_REVIEW",
-                (f"[corner_view] make matched but front-similarity {similarity:.4f} "
-                 f"< {similarity_min:.4f} — uncalibrated signal, human check"), detail)
-    reason = "[corner_view] make matched" + (f", front-similarity {similarity:.4f}" if similarity is not None else "")
-    return "PASS", reason, detail
+                (f"[corner_view] front-similarity {similarity:.4f} < {similarity_min:.4f} "
+                 "— uncalibrated signal, human check"), detail)
+    return "PASS", f"[corner_view] front-similarity {similarity:.4f}", detail
 
 
 def _identity_via_pure_side_profile(image, claimed_make: str) -> tuple[str, str, dict]:
@@ -237,9 +260,10 @@ def check_side_identity(
     from axle-count/duplicate.
 
     ``front_reference_image`` is this truck's own already-accepted front photo,
-    used by the corner-view bucket's embedding-similarity arm; without it, that
-    bucket falls back to make/model-only (same ceiling as the pure-side-profile
-    bucket)."""
+    used by the corner-view bucket's embedding-similarity check — its only
+    identity signal; without it, that bucket is MANUAL_REVIEW ("unverifiable")
+    rather than falling back to the weaker make classifier (which is reserved
+    for the pure-side-profile bucket only — see module docstring)."""
     try:
         arr = load_rgb_array(image)
         bucket = get_side_image_type_classifier().predict(arr)["bucket"]
@@ -247,7 +271,7 @@ def check_side_identity(
             decision, reason, detail = _identity_via_vrn(image, claimed_vrn)
         elif bucket == "corner_view":
             decision, reason, detail = _identity_via_corner_view(
-                image, claimed_make, front_reference_image, similarity_min)
+                image, front_reference_image, similarity_min)
         else:
             decision, reason, detail = _identity_via_pure_side_profile(image, claimed_make)
     except Exception as e:

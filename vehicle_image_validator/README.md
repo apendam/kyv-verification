@@ -493,8 +493,22 @@ the claimed VRN/make? Routed by `SideImageTypeClassifier`
 | Bucket | Strategy | Reliability |
 |---|---|---|
 | `vrn_visible` | Re-runs Q2's own VRN detector/matcher on this image, unchanged | Strong — exact identity |
-| `corner_view` | Make/model match + a direct SigLIP embedding similarity against this truck's own on-file front photo | Uncalibrated — see caveat below |
+| `corner_view` | A direct SigLIP embedding similarity against this truck's own on-file front photo | Uncalibrated — see caveat below |
 | `pure_side_profile` | Make/model match only | Weak by design — never a confident PASS alone |
+
+**No make/model check in `corner_view` any more** — it used to run there too, but
+was dropped: `MakeClassifier` is a coarse, brand-only zero-shot read (compares the
+image against 8 fixed brand-name text prompts, never actually reads painted
+logos/text — see the known zero-shot-make limitation flagged above under "SigLIP
+2") that can misfire between visually-similar cab shapes across manufacturers
+(confirmed on a real upload during manual testing: a genuine Tata read as
+"Eicher", with the top few brands separated by only single-digit percentage
+points — see `diagnose_make_read.py`), and a mismatch used to REJECT outright
+*before* the (stronger) embedding-similarity check even ran — so a genuine truck
+could get auto-rejected on what amounts to a coin-flip brand read.
+Now `corner_view` relies solely on the embedding-similarity check; without a
+`front_reference_image` to compare against, it's `MANUAL_REVIEW` ("unverifiable"),
+never a fallback to the make classifier.
 
 The `corner_view` embedding-similarity check is a **direct 1:1 comparison**
 (`front_reference_image` vs. this crop), not a vector-DB search — and it is
@@ -502,9 +516,12 @@ explicitly **uncalibrated**: a general SigLIP embedding is trained for semantic
 similarity (what make/model is this), not individual-vehicle re-identification, so
 it may not reliably separate "same truck, different angle" from "different truck,
 same make/model/colour." Validate `config.SIDE_IMAGE_SIMILARITY_MIN` against real
-labeled pairs before trusting it. The `pure_side_profile` bucket is the genuinely
+labeled pairs before trusting it — now that it's `corner_view`'s *only* signal, this
+matters more than it used to. The `pure_side_profile` bucket is the genuinely
 open problem flagged in design discussion, not solved here — a make/model match
-from that bucket alone is capped at `MANUAL_REVIEW`.
+from that bucket alone is capped at `MANUAL_REVIEW`. It's also the only bucket
+that still uses the make classifier at all, since a bare side profile has nothing
+else to go on (no plate, no front grille, no reference photo to embed-compare).
 
 Duplicate detection reuses `check_duplicate()` unchanged, always run (the
 webapp auto-generates an `upload_id` when none is given) — scoped to the
