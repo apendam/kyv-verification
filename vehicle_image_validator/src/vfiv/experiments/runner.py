@@ -149,14 +149,20 @@ def run_test_case(
     max_confusable_edits: int = config.VRN_MAX_CONFUSABLE_EDITS,
     model_conf_min: float = config.MODEL_CONF_MIN,
     model_match_min: float = config.MODEL_MATCH_MIN,
+    upload_id: str | None = None,
 ) -> ExperimentResult:
     """End-to-end: Q1 -> (Q2 and Q3). Q1 gates Q2+Q3 entirely (skipped, saving the
     Rekognition/SigLIP/Gemini calls, if Q1 doesn't PASS); once Q1 passes, Q2 and Q3 run
     independently of each other. The ``*_gemini_model`` params override the configured
     default (env-var driven, see config.py) for that stage's call — ignored unless
     that stage's backend is ``"gemini"``.
+
+    Pass ``upload_id`` to also run the duplicate check (``image_type="front"``) as
+    part of Q1 — ``claimed_vrn`` is already mandatory here (Q2 needs it regardless),
+    so unlike the standalone Q1 tab this only needs the one extra id to turn on.
     """
-    front = run_q1_only(image, q1_backend, q1_gemini_model, conf_min, ai_reject_conf)
+    front = run_q1_only(image, q1_backend, q1_gemini_model, conf_min, ai_reject_conf,
+                        claimed_vrn=claimed_vrn, upload_id=upload_id)
     if front.decision != "PASS":
         return ExperimentResult(q1_backend=q1_backend, q1=front,
                                 overall_decision=front.decision, overall_reason=front.reason)

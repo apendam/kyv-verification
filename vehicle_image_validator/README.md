@@ -157,9 +157,10 @@ python -m vfiv.webapp   # → http://127.0.0.1:7860
   by check name, since that's the natural mental model for someone testing an upload
   ("does this front photo pass?" not "does Q1 pass?"):
   - **Front Image** — Q1 (front-image gate) / Q2 (VRN + colour) / Q3 (make + model) /
-    end-to-end, all sub-tabs testing the same uploaded front photo. Q1 and end-to-end
-    both take an optional VRN, which (if filled in) also checks this upload against the
-    `"front"` reference corpus.
+    end-to-end, all sub-tabs testing the same uploaded front photo. Q1 takes an
+    optional VRN, which (if filled in) also checks this upload against the `"front"`
+    reference corpus; **End-to-end** always runs that same duplicate check as part of
+    Q1, since it already requires a truck number for Q2/Q3 regardless.
   - **Side/Axle Image** — broken into check-based buckets: **Axle count** (isolated
     `check_axle_count`), **Identity binding** (isolated `check_side_identity`, routed
     into vrn_visible/corner_view/pure_side_profile), **Duplicate check** (an explicit,
@@ -381,6 +382,14 @@ surfaces as `duplicate_is_suspect=True` on the result. Wired at the
 test/webapp layer (rather than inside `front_image/front_image.py`'s
 production `validate_front_image`) so it works with whichever Q1 backend
 you're comparing (`real_cv` | `claude` | `gemini`).
+
+**End-to-end (front image)** — `run_test_case()` (`experiments/runner.py`, what
+the webapp's front-image **End-to-end** tab calls) threads its own `claimed_vrn`
+into the same `run_q1_only()` above, so the `"front"` duplicate check is folded
+into Q1 there too — it runs unconditionally (no separate opt-in field) since a
+truck number is already mandatory in that tab for Q2/Q3 to run at all. A
+duplicate verdict escalates Q1's decision and, like any other non-PASS Q1
+result, short-circuits Q2/Q3 for that request.
 
 **FASTag (end-to-end)** — `check_fastag_upload()` takes the same optional
 `claimed_vrn` + `upload_id` pair, folding in `check_duplicate(...,

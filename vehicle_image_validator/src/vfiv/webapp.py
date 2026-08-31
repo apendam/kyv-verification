@@ -248,7 +248,8 @@ def run_q3_individual(image, make, model, q3_make_backend, q3_model_backend,
 
 def run_e2e_individual(image, truck_number, make, model, q1_backend, q2_backend,
                        q3_make_backend, q3_model_backend,
-                       q1_gemini_model, q2_gemini_model, q3_make_gemini_model, q3_model_gemini_model):
+                       q1_gemini_model, q2_gemini_model, q3_make_gemini_model, q3_model_gemini_model,
+                       upload_id=None):
     if image is None:
         return "### Upload an image first.", {}
     if not truck_number or not make:
@@ -260,6 +261,7 @@ def run_e2e_individual(image, truck_number, make, model, q1_backend, q2_backend,
         q3_make_backend=q3_make_backend, q3_model_backend=q3_model_backend,
         q1_gemini_model=q1_gemini_model, q2_gemini_model=q2_gemini_model,
         q3_make_gemini_model=q3_make_gemini_model, q3_model_gemini_model=q3_model_gemini_model,
+        upload_id=_upload_id_or_random(upload_id),
     )
     return _banner(result.overall_decision, result.overall_reason), result.model_dump()
 
@@ -529,6 +531,10 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                             e2e_vrn_in = gr.Textbox(label="Truck number (VRN)")
                             e2e_make_in = gr.Textbox(label="Make")
                             e2e_model_in = gr.Textbox(label="Model (optional)")
+                            e2e_upload_id_in = gr.Textbox(
+                                label="Upload id (optional — auto-generated if left blank; the "
+                                      "duplicate check against the 'front' reference library always "
+                                      "runs as part of Q1)")
                             e2e_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             e2e_decision_out = gr.Markdown()
@@ -537,7 +543,7 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                         run_e2e_individual,
                         inputs=[e2e_image_in, e2e_vrn_in, e2e_make_in, e2e_model_in,
                                e2e_q1_dd, e2e_q2_dd, e2e_q3m_dd, e2e_q3mo_dd,
-                               e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm],
+                               e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm, e2e_upload_id_in],
                         outputs=[e2e_decision_out, e2e_json_out],
                     )
 

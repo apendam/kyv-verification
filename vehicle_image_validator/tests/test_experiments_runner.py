@@ -112,6 +112,65 @@ def test_q1_only_folds_in_duplicate_suspect_when_vrn_and_upload_id_given(monkeyp
     assert "duplicate: near-duplicate of img_1" in result.reason
 
 
+def test_run_test_case_skips_duplicate_check_without_upload_id(monkeypatch):
+    """run_test_case's claimed_vrn is always present (Q2 needs it regardless), so
+    the duplicate check must be gated on upload_id alone -- omitting it must not
+    touch the duplicate-detection corpus."""
+    import vfiv.experiments.runner as runner_module
+    from vfiv.schemas import MakeModelCheckResult, VrnCheckResult
+
+    monkeypatch.setattr(runner_module.q1_select, "classify_q1",
+                        lambda image, backend, gemini_model=None: _passing_q1_raw())
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("check_duplicate should not be called without upload_id")
+
+    monkeypatch.setattr(runner_module, "check_duplicate", _fail_if_called)
+    monkeypatch.setattr(runner_module, "run_q2_only", lambda *a, **k: VrnCheckResult(
+        decision="PASS", status="MATCH", claimed_vrn="UP42T4069", reason="test", checked=True))
+    monkeypatch.setattr(runner_module, "run_q3_only", lambda *a, **k: {
+        "decision": "PASS", "reason": "test", "make_status": "MATCH", "make_match_via": ["siglip"],
+        "make_votes": [], "model_checked": False, "model_status": None, "extracted_model": None})
+
+    result = run_test_case("does-not-matter.jpg", claimed_vrn="UP42T4069", claimed_make="TATA MOTORS LTD")
+    assert result.q1.duplicate_is_suspect is None
+
+
+def test_run_test_case_folds_duplicate_check_into_q1_and_short_circuits(monkeypatch):
+    """Passing upload_id must thread claimed_vrn + upload_id into run_test_case's own
+    Q1 call -- a duplicate-check MANUAL_REVIEW verdict escalates Q1 and short-circuits
+    Q2/Q3, same as any other non-PASS Q1 decision (front.decision != "PASS")."""
+    import vfiv.experiments.runner as runner_module
+    from vfiv.schemas import DuplicateCheckResult
+
+    monkeypatch.setattr(runner_module.q1_select, "classify_q1",
+                        lambda image, backend, gemini_model=None: _passing_q1_raw())
+
+    def _fake_check_duplicate(image, upload_id, claimed_vrn, image_type="front"):
+        assert image_type == "front"
+        assert upload_id == "img_x"
+        assert claimed_vrn == "UP42T4069"
+        return DuplicateCheckResult(
+            decision="MANUAL_REVIEW", reason="near-duplicate of img_1", checked=True,
+            claimed_vrn=claimed_vrn, is_duplicate_suspect=True, best_match_id="img_1",
+            best_match_similarity=0.99, best_match_vrn="MH12AB1234",
+        )
+
+    monkeypatch.setattr(runner_module, "check_duplicate", _fake_check_duplicate)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("Q2/Q3 must not run once Q1 is escalated to MANUAL_REVIEW")
+
+    monkeypatch.setattr(runner_module, "run_q2_only", _fail_if_called)
+    monkeypatch.setattr(runner_module, "run_q3_only", _fail_if_called)
+
+    result = run_test_case("does-not-matter.jpg", claimed_vrn="UP42T4069", claimed_make="TATA MOTORS LTD",
+                           upload_id="img_x")
+    assert result.overall_decision == "MANUAL_REVIEW"
+    assert result.q1.duplicate_is_suspect is True
+    assert result.q2 is None
+
+
 @requires_both
 def test_q1_reject_short_circuits_q2_and_q3():
     """truck1.png is a known CV-gate REJECT — Q2/Q3 should never run."""
