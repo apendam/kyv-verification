@@ -5,6 +5,7 @@ from vfiv.fastag_image.fastag_check import (
     check_fastag_upload,
     check_printed_digits_only,
     check_qr_only,
+    classify_fastag_upload,
     decide_fastag,
     decide_printed_digits_only,
     decide_qr_only,
@@ -226,3 +227,22 @@ def test_check_printed_digits_only_degrades_when_read_unavailable(monkeypatch):
     assert result.decision == "MANUAL_REVIEW"
     assert result.checked is False
     assert "no AWS credentials" in result.reason
+
+
+# --- classify_fastag_upload degradation ------------------------------------------
+
+def test_classify_fastag_upload_degrades_on_unexpected_exception_type(monkeypatch):
+    """A missing OS-level dependency (libzbar0 for pyzbar) or an unexpected SDK
+    error raises something OTHER than FastagReadError -- must still degrade
+    cleanly to checked=False, not crash the caller (which, before this fix,
+    propagated all the way to the webapp as a bare unexplained "Error")."""
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    def _boom(image, backend="rekognition", reader=None, vlm_model=None):
+        raise RuntimeError("zbar shared library not found")
+
+    monkeypatch.setattr(fastag_module, "read_fastag", _boom)
+
+    result = classify_fastag_upload("does-not-matter.jpg")
+    assert result["checked"] is False
+    assert "zbar shared library not found" in result["error"]

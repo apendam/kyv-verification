@@ -44,11 +44,20 @@ def classify_fastag_upload(
     """image: file path or PIL.Image. Real barcode/QR decode + OCR — no
     matching/decisioning here, see ``decide_fastag``. ``backend`` selects the
     printed-digit OCR source ("rekognition" | "claude" | "gemini") — see
-    ``backends/fastag_reader.py``; the barcode/QR decode is unaffected either way."""
+    ``backends/fastag_reader.py``; the barcode/QR decode is unaffected either way.
+
+    Catches ANY exception, not just ``FastagReadError`` — same "never crash,
+    always degrade" posture as every other ``classify_*``/``check_*`` function in
+    this codebase (``check_axle_count``, ``check_side_identity``, etc.). A missing
+    OS-level dependency (e.g. ``libzbar0`` for ``pyzbar`` — see module docstring)
+    or an unexpected SDK error would otherwise propagate uncaught straight through
+    to the webapp as a bare "Error" with no message, instead of a clear reason."""
     try:
         read = read_fastag(image, backend=backend, vlm_model=vlm_model)
     except FastagReadError as e:
         return {"checked": False, "error": str(e)}
+    except Exception as e:
+        return {"checked": False, "error": f"unexpected error reading FASTag ({e})"}
     return {"checked": True, "read": read}
 
 
