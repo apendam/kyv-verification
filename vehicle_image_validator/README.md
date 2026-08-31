@@ -167,13 +167,14 @@ python -m vfiv.webapp   # → http://127.0.0.1:7860
     standalone check against the `"side"` corpus), and **End-to-end** (the combined
     `check_side_image_upload`, worst of axle/identity/duplicate). The first three are
     independently unit-testable — see `side_image/side_image_check.py`.
-  - **FASTag** — **QR / Barcode read** and **Printed digits (OCR)** show the raw
-    decode/read only, with no pass/fail of their own: the actual fraud-check
-    (`decide_fastag`) needs all three sources together to judge cross-source
-    consistency, so an isolated bucket that fabricated a partial verdict would be
-    misleading. **End-to-end** (`check_fastag_upload`) is the only sub-tab that
-    actually decides PASS/REJECT/MANUAL_REVIEW, and (like Q1) takes an optional VRN to
-    also check against the `"fastag"` reference corpus.
+  - **FASTag** — **QR / Barcode read** and **Printed digits (OCR)** always show the
+    raw decode/read; give them a claimed value and they'll ALSO return a narrower,
+    single-source verdict (`decide_qr_only` / `decide_printed_digits_only`) — leave
+    the claim blank for the old raw-read-only behaviour. Neither runs the
+    cross-source tamper check (`decide_fastag` needs all three sources together to
+    judge consistency) — an isolated bucket fabricating that would be misleading, so
+    it stays exclusive to **End-to-end** (`check_fastag_upload`), which (like Q1)
+    also takes an optional VRN to check against the `"fastag"` reference corpus.
   - **Reference Images** — a separate top-level tab for *seeding* the corpus (see
     "Duplicate detection" below) — it stores an embedding, full stop. It never runs a
     duplicate search or produces a decision; the actual check happens later, when a
@@ -464,6 +465,27 @@ cross-checked against each other as well as against the claimed value:
 Forging all three consistently is a much higher bar than editing the visible digits
 alone, so **a disagreement between sources that were each legibly read is itself a
 REJECT**, checked before comparing any of them to the claimed value.
+
+**Single-source checks** (`decide_qr_only` / `check_qr_only`, `decide_printed_digits_only`
+/ `check_printed_digits_only`) — narrower than the full cross-source check above, each
+validating exactly ONE source against its own claimed value, with no cross-source
+tamper check (that stays exclusive to `decide_fastag`):
+
+- **QR only** — exact match (the QR's own error correction already makes it damage-
+  tolerant, so no fuzzy tolerance is added here) between the QR-parsed `fastag_id` and
+  a claimed **Tag ID**; if a claimed bank code is also given, a QR-matched-but-bank-
+  mismatched result downgrades to `MANUAL_REVIEW` rather than `PASS` — same posture as
+  the full check's bank-code handling.
+- **Printed digits only** — fuzzy match (same confusable-character tolerance as
+  everywhere else) between the OCR'd printed digits and a claimed **barcode number** —
+  useful when that number was captured independently (e.g. a dedicated handheld
+  barcode scan) rather than decoded from this same photo, to cross-validate the two
+  independently-obtained values against each other.
+
+Both are opt-in in the webapp: leave the claimed-value field blank on the **QR /
+Barcode read** or **Printed digits (OCR)** tab and you get the old raw-read-only
+display; fill it in and you get a real `PASS`/`MISMATCH`/`UNREADABLE` verdict on that
+one source alone, folded into the same result.
 
 ```bash
 python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936

@@ -1,7 +1,14 @@
 import pytest
 
 from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payload, read_fastag
-from vfiv.fastag_image.fastag_check import check_fastag_upload, decide_fastag
+from vfiv.fastag_image.fastag_check import (
+    check_fastag_upload,
+    check_printed_digits_only,
+    check_qr_only,
+    decide_fastag,
+    decide_printed_digits_only,
+    decide_qr_only,
+)
 
 
 def _read(codes=None, printed_id=None) -> dict:
@@ -129,3 +136,93 @@ def test_check_fastag_upload_folds_in_duplicate_suspect_when_vrn_and_upload_id_g
     assert result.decision == "MANUAL_REVIEW"
     assert result.duplicate_is_suspect is True
     assert "duplicate: near-duplicate of img_1" in result.reason
+
+
+# --- QR-only check --------------------------------------------------------------
+
+def test_qr_only_matching_tag_id_passes():
+    r = _read(codes=[DecodedCode(symbology="QRCODE", data="607469009874936@icici")])
+    result = decide_qr_only(r, claimed_fastag_id="607469009874936")
+    assert result.decision == "PASS"
+    assert result.status == "MATCH"
+    assert result.qr_tag_id == "607469009874936"
+    assert result.qr_bank_code == "icici"
+
+
+def test_qr_only_mismatched_tag_id_rejects():
+    r = _read(codes=[DecodedCode(symbology="QRCODE", data="607469009874936@icici")])
+    result = decide_qr_only(r, claimed_fastag_id="999999999999999")
+    assert result.decision == "REJECT"
+    assert result.status == "MISMATCH"
+
+
+def test_qr_only_bank_code_mismatch_is_manual_review_not_reject():
+    r = _read(codes=[DecodedCode(symbology="QRCODE", data="607469009874936@icici")])
+    result = decide_qr_only(r, claimed_fastag_id="607469009874936", claimed_bank_code="hdfc")
+    assert result.decision == "MANUAL_REVIEW"
+    assert "bank code mismatch" in result.reason
+
+
+def test_qr_only_no_qr_decoded_is_manual_review():
+    """A barcode-only read (no QR at all) must not be treated as a mismatch --
+    there's simply nothing to compare, same "bad photo isn't proof of fraud"
+    posture as everywhere else in this module."""
+    r = _read(codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")])
+    result = decide_qr_only(r, claimed_fastag_id="607469009874936")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.status == "UNREADABLE"
+
+
+def test_check_qr_only_degrades_when_read_unavailable(monkeypatch):
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_upload",
+                        lambda image, backend, vlm_model=None: {"checked": False, "error": "no AWS credentials"})
+
+    result = check_qr_only("does-not-matter.jpg", claimed_fastag_id="607469009874936")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "no AWS credentials" in result.reason
+
+
+# --- Printed-digits-only check ---------------------------------------------------
+
+def test_printed_digits_only_exact_match_passes():
+    r = _read(printed_id="607469-009-0874936")
+    result = decide_printed_digits_only(r, claimed_barcode="607469-009-0874936")
+    assert result.decision == "PASS"
+    assert result.status == "MATCH"
+
+
+def test_printed_digits_only_fuzzy_confusable_match_passes():
+    """Same confusable-character tolerance (0<->O etc.) as the rest of this
+    module's OCR matching."""
+    r = _read(printed_id="6074690090874936".replace("0", "O", 1))
+    result = decide_printed_digits_only(r, claimed_barcode="6074690090874936")
+    assert result.decision == "PASS"
+
+
+def test_printed_digits_only_mismatch_rejects():
+    r = _read(printed_id="607469-009-0874936")
+    result = decide_printed_digits_only(r, claimed_barcode="111111-111-1111111")
+    assert result.decision == "REJECT"
+    assert result.status == "MISMATCH"
+
+
+def test_printed_digits_only_nothing_readable_is_manual_review():
+    r = _read()
+    result = decide_printed_digits_only(r, claimed_barcode="607469-009-0874936")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.status == "UNREADABLE"
+
+
+def test_check_printed_digits_only_degrades_when_read_unavailable(monkeypatch):
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_upload",
+                        lambda image, backend, vlm_model=None: {"checked": False, "error": "no AWS credentials"})
+
+    result = check_printed_digits_only("does-not-matter.jpg", claimed_barcode="607469-009-0874936")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "no AWS credentials" in result.reason

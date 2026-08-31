@@ -23,7 +23,7 @@ from truck_extract_match.plate.format import confusable_distance
 from vfiv import config
 from vfiv.backends.fastag_reader import FastagReadError, parse_qr_payload, read_fastag
 from vfiv.duplicate_check import check_duplicate
-from vfiv.schemas import FastagCheckResult
+from vfiv.schemas import FastagCheckResult, PrintedDigitsOnlyResult, QrOnlyResult
 
 
 def _norm(s: str | None) -> str:
@@ -140,6 +140,121 @@ def decide_fastag(
         matched_via=matched_via,
         reason=reason,
     )
+
+
+def decide_qr_only(
+    r: dict,
+    claimed_fastag_id: str,
+    claimed_bank_code: str | None = None,
+) -> QrOnlyResult:
+    """Pure decision logic for the QR code ALONE — exact match only (the QR's
+    built-in error correction makes it damage-tolerant but exactly decoded, no
+    fuzzy tolerance needed), independent of ``decide_fastag``'s cross-source
+    consistency check (which needs all three sources together)."""
+    read = r["read"]
+    qr_tag_id = qr_bank_code = None
+    for code in read.decoded_codes:
+        if code.symbology.upper() == "QRCODE":
+            qr_tag_id, qr_bank_code = parse_qr_payload(code.data)
+            if qr_tag_id:
+                break
+
+    if not qr_tag_id:
+        return QrOnlyResult(
+            decision="MANUAL_REVIEW", status="UNREADABLE", checked=True,
+            claimed_fastag_id=claimed_fastag_id, claimed_bank_code=claimed_bank_code,
+            reason="no QR code could be decoded from this image",
+        )
+    if _norm(qr_tag_id) != _norm(claimed_fastag_id):
+        return QrOnlyResult(
+            decision="REJECT", status="MISMATCH", checked=True,
+            claimed_fastag_id=claimed_fastag_id, claimed_bank_code=claimed_bank_code,
+            qr_tag_id=qr_tag_id, qr_bank_code=qr_bank_code,
+            reason=f"QR tag id {qr_tag_id!r} != claimed {claimed_fastag_id!r}",
+        )
+    if claimed_bank_code and qr_bank_code and _norm(qr_bank_code) != _norm(claimed_bank_code):
+        return QrOnlyResult(
+            decision="MANUAL_REVIEW", status="MATCH", checked=True,
+            claimed_fastag_id=claimed_fastag_id, claimed_bank_code=claimed_bank_code,
+            qr_tag_id=qr_tag_id, qr_bank_code=qr_bank_code,
+            reason=(f"QR tag id matched, but bank code mismatch ({qr_bank_code!r} vs "
+                   f"claimed {claimed_bank_code!r}) — verify tag/bank record"),
+        )
+    return QrOnlyResult(
+        decision="PASS", status="MATCH", checked=True,
+        claimed_fastag_id=claimed_fastag_id, claimed_bank_code=claimed_bank_code,
+        qr_tag_id=qr_tag_id, qr_bank_code=qr_bank_code,
+        reason=f"QR tag id matches claimed {claimed_fastag_id!r}",
+    )
+
+
+def decide_printed_digits_only(
+    r: dict,
+    claimed_barcode: str,
+    max_ocr_edits: int = config.FASTAG_OCR_MAX_CONFUSABLE_EDITS,
+) -> PrintedDigitsOnlyResult:
+    """Pure decision logic for the printed human-readable digits ALONE — fuzzy
+    match (OCR is the fuzzy/error-prone source of the three) against a
+    separately-claimed barcode value, e.g. from a dedicated handheld barcode
+    scan rather than decoded from this same photo. Independent of
+    ``decide_fastag``'s cross-source consistency check."""
+    printed = r["read"].printed_id_text
+    if not printed:
+        return PrintedDigitsOnlyResult(
+            decision="MANUAL_REVIEW", status="UNREADABLE", checked=True,
+            claimed_barcode=claimed_barcode,
+            reason="no printed digits could be read from this image",
+        )
+    if _norm(printed) == _norm(claimed_barcode) or _fuzzy_match(_norm(printed), _norm(claimed_barcode), max_ocr_edits):
+        return PrintedDigitsOnlyResult(
+            decision="PASS", status="MATCH", checked=True,
+            claimed_barcode=claimed_barcode, extracted_printed_id=printed,
+            reason=f"printed digits {printed!r} match claimed barcode {claimed_barcode!r}",
+        )
+    return PrintedDigitsOnlyResult(
+        decision="REJECT", status="MISMATCH", checked=True,
+        claimed_barcode=claimed_barcode, extracted_printed_id=printed,
+        reason=f"printed digits {printed!r} != claimed barcode {claimed_barcode!r}",
+    )
+
+
+def check_qr_only(
+    image,
+    claimed_fastag_id: str,
+    claimed_bank_code: str | None = None,
+    backend: str = config.FASTAG_OCR_BACKEND,
+    vlm_model: str | None = None,
+) -> QrOnlyResult:
+    """Read then decide (single-call path) for the QR code alone. ``backend``
+    only affects the (unused-here) OCR read; the QR decode itself is
+    deterministic either way."""
+    r = classify_fastag_upload(image, backend=backend, vlm_model=vlm_model)
+    if not r.get("checked"):
+        return QrOnlyResult(
+            decision="MANUAL_REVIEW", checked=False,
+            claimed_fastag_id=claimed_fastag_id, claimed_bank_code=claimed_bank_code,
+            reason=f"fastag check unavailable ({r.get('error', '?')})", error=r.get("error"),
+        )
+    return decide_qr_only(r, claimed_fastag_id, claimed_bank_code)
+
+
+def check_printed_digits_only(
+    image,
+    claimed_barcode: str,
+    backend: str = config.FASTAG_OCR_BACKEND,
+    vlm_model: str | None = None,
+    max_ocr_edits: int = config.FASTAG_OCR_MAX_CONFUSABLE_EDITS,
+) -> PrintedDigitsOnlyResult:
+    """Read then decide (single-call path) for the printed digits alone.
+    ``backend`` — "rekognition" (default) | "claude" | "gemini" — selects the
+    printed-digit OCR source, same as ``check_fastag_upload``."""
+    r = classify_fastag_upload(image, backend=backend, vlm_model=vlm_model)
+    if not r.get("checked"):
+        return PrintedDigitsOnlyResult(
+            decision="MANUAL_REVIEW", checked=False, claimed_barcode=claimed_barcode,
+            reason=f"fastag check unavailable ({r.get('error', '?')})", error=r.get("error"),
+        )
+    return decide_printed_digits_only(r, claimed_barcode, max_ocr_edits)
 
 
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}

@@ -126,6 +126,39 @@ class FastagCheckResult(BaseModel):
     error: Optional[str] = None
 
 
+class QrOnlyResult(BaseModel):
+    """Just the QR-code piece of the FASTag check, exposed standalone — exact
+    match only (the QR's error correction makes it damage-tolerant but exactly
+    decoded, no fuzzy tolerance needed) against a separately-claimed Tag ID.
+    Independent of ``FastagCheckResult``'s cross-source consistency check (which
+    needs all three sources together) — see ``fastag_image/fastag_check.py``."""
+    decision: Decision
+    status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
+    checked: bool
+    claimed_fastag_id: str
+    claimed_bank_code: Optional[str] = None
+    qr_tag_id: Optional[str] = None
+    qr_bank_code: Optional[str] = None
+    reason: str
+    error: Optional[str] = None
+
+
+class PrintedDigitsOnlyResult(BaseModel):
+    """Just the printed-digits OCR piece of the FASTag check, exposed standalone
+    — fuzzy match (OCR is the fuzzy/error-prone source of the three) against a
+    separately-claimed barcode value (e.g. from a dedicated handheld barcode
+    scan, not decoded from this same photo). Independent of
+    ``FastagCheckResult``'s cross-source consistency check — see
+    ``fastag_image/fastag_check.py``."""
+    decision: Decision
+    status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
+    checked: bool
+    claimed_barcode: str
+    extracted_printed_id: Optional[str] = None
+    reason: str
+    error: Optional[str] = None
+
+
 class AxleCountResult(BaseModel):
     """Just the axle-count piece of ``SideImageCheckResult`` — same VLM judgment
     call (``classify_axle_count````decide_axle_count``), exposed standalone so it

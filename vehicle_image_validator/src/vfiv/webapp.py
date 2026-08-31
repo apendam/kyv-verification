@@ -21,7 +21,12 @@ from vfiv.backends.vector_store import DuplicateStoreError, count_by_type
 from vfiv.experiments import q1_select, q2_select, q3_select
 from vfiv.experiments.runner import run_q1_only, run_q2_only, run_q3_only, run_test_case
 from vfiv.duplicate_check import check_duplicate, store_reference_image
-from vfiv.fastag_image.fastag_check import check_fastag_upload, classify_fastag_upload
+from vfiv.fastag_image.fastag_check import (
+    check_fastag_upload,
+    classify_fastag_upload,
+    decide_printed_digits_only,
+    decide_qr_only,
+)
 from vfiv.side_image.side_image_check import (
     AXLE_COUNT_BACKENDS,
     check_axle_count,
@@ -286,33 +291,49 @@ def _decoded_codes_detail(read):
     }
 
 
-def run_fastag_raw_individual(image):
-    """QR/barcode decode only -- no claimed value to compare against, and no
-    decision: the fraud-check logic (decide_fastag) needs all three sources
-    together to judge cross-consistency, so this bucket never fabricates a
-    partial pass/fail -- it only shows what was actually decoded."""
+def run_fastag_raw_individual(image, claimed_fastag_id=None, claimed_bank_code=None):
+    """QR/barcode decode -- always shows the raw decode. The full cross-source
+    fraud check (decide_fastag, needing all three sources together to judge
+    tamper-consistency) still only lives in the End-to-end tab; but with a
+    claimed Tag ID, this now ALSO runs the QR-only verdict (exact match against
+    the QR's decoded tag id, see decide_qr_only) -- narrower than the full
+    check, but a real pass/fail on its own. Leave the Tag ID blank for the old
+    raw-read-only behaviour."""
     if image is None:
         return "### Upload an image first.", {}
     r = classify_fastag_upload(image)
     if not r.get("checked"):
         return f"### Read unavailable\n\n{r.get('error', '?')}", {}
     detail = _decoded_codes_detail(r["read"])
-    n = len(detail["decoded_codes"])
-    summary = f"### {n} code(s) decoded" if n else "### Nothing decoded from this image"
-    return summary, detail
+    claimed_fastag_id = _clean_optional(claimed_fastag_id)
+    if not claimed_fastag_id:
+        n = len(detail["decoded_codes"])
+        summary = f"### {n} code(s) decoded" if n else "### Nothing decoded from this image"
+        return summary, detail
+    verdict = decide_qr_only(r, claimed_fastag_id, _clean_optional(claimed_bank_code))
+    return _banner(verdict.decision, verdict.reason), {**detail, **verdict.model_dump()}
 
 
-# --- FASTag: printed-digit OCR only (backend-selectable, no claim to compare) -----
+# --- FASTag: printed-digit OCR only (backend-selectable) --------------------------
 
-def run_fastag_ocr_individual(image, backend, gemini_model):
+def run_fastag_ocr_individual(image, backend, gemini_model, claimed_barcode=None):
+    """Printed-digit OCR -- always shows the raw read. With a claimed barcode
+    value (e.g. from a separate handheld barcode scan, not decoded from this
+    same photo), also runs the printed-digits-only verdict (fuzzy match, see
+    decide_printed_digits_only) -- independent of the full cross-source check.
+    Leave the barcode field blank for the old raw-read-only behaviour."""
     if image is None:
         return "### Upload an image first.", {}
     r = classify_fastag_upload(image, backend=backend, vlm_model=gemini_model if backend == "gemini" else None)
     if not r.get("checked"):
         return f"### Read unavailable\n\n{r.get('error', '?')}", {}
     printed = r["read"].printed_id_text
-    summary = f"### Printed digits\n\n`{printed}`" if printed else "### Nothing legible read from this image"
-    return summary, {"extracted_printed_id": printed, "backend": backend}
+    claimed_barcode = _clean_optional(claimed_barcode)
+    if not claimed_barcode:
+        summary = f"### Printed digits\n\n`{printed}`" if printed else "### Nothing legible read from this image"
+        return summary, {"extracted_printed_id": printed, "backend": backend}
+    verdict = decide_printed_digits_only(r, claimed_barcode)
+    return _banner(verdict.decision, verdict.reason), verdict.model_dump()
 
 
 # --- FASTag: end-to-end ------------------------------------------------------------
@@ -686,9 +707,10 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                 "OCR read — or the full end-to-end decision, which cross-checks all three "
                 "sources against each other AND the claimed value (a disagreement between "
                 "legibly-read sources is itself a REJECT, checked before the isolated "
-                "sub-tabs here could even show you). The isolated sub-tabs below show raw "
-                "reads only, with no pass/fail of their own, since that cross-check needs "
-                "all three sources together."
+                "sub-tabs here could even show you). The isolated sub-tabs below always show "
+                "the raw read; give them a claimed value and they'll also return a narrower "
+                "pass/fail verdict on that ONE source alone (no cross-source tamper check — "
+                "that still only lives in End-to-end)."
             )
             fastag_dd = gr.Dropdown(FASTAG_OCR_BACKENDS, value=config.FASTAG_OCR_BACKEND,
                                     label="Printed-digit OCR backend")
@@ -697,33 +719,53 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                                            allow_custom_value=True, label="Gemini model")
 
             with gr.Tabs():
-                # --- QR / Barcode read only ---------------------------------------------
+                # --- QR / Barcode read (+ optional QR-only verdict) --------------------
                 with gr.Tab("QR / Barcode read"):
+                    gr.Markdown(
+                        "Always shows the raw QR/barcode decode. Fill in a claimed **Tag "
+                        "ID** to also get a pass/fail verdict on the QR code alone (exact "
+                        "match, parsed from the QR's `<TagID>@<bank_code>` payload) — this "
+                        "is narrower than the End-to-end tab's full cross-source check, "
+                        "which also verifies the barcode/OCR agree with each other."
+                    )
                     with gr.Row():
                         with gr.Column():
                             fastag_raw_image_in = gr.Image(type="pil", label="Upload FASTag photo")
+                            fastag_raw_tagid_in = gr.Textbox(
+                                label="Claimed Tag ID (optional — leave blank for a raw "
+                                      "read with no verdict)")
+                            fastag_raw_bank_in = gr.Textbox(label="Claimed bank code (optional)")
                             fastag_raw_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             fastag_raw_decision_out = gr.Markdown()
                             fastag_raw_json_out = gr.JSON(label="Full result")
                     fastag_raw_run_btn.click(
                         run_fastag_raw_individual,
-                        inputs=[fastag_raw_image_in],
+                        inputs=[fastag_raw_image_in, fastag_raw_tagid_in, fastag_raw_bank_in],
                         outputs=[fastag_raw_decision_out, fastag_raw_json_out],
                     )
 
-                # --- Printed-digit OCR only ---------------------------------------------
+                # --- Printed-digit OCR (+ optional printed-digits-only verdict) --------
                 with gr.Tab("Printed digits (OCR)"):
+                    gr.Markdown(
+                        "Always shows the raw OCR read. Fill in a claimed **barcode "
+                        "number** (e.g. from a separate handheld barcode scan, not decoded "
+                        "from this same photo) to also get a fuzzy-match pass/fail verdict "
+                        "on the printed digits alone."
+                    )
                     with gr.Row():
                         with gr.Column():
                             fastag_ocr_image_in = gr.Image(type="pil", label="Upload FASTag photo")
+                            fastag_ocr_barcode_in = gr.Textbox(
+                                label="Claimed barcode number (optional — leave blank for a "
+                                      "raw read with no verdict)")
                             fastag_ocr_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             fastag_ocr_decision_out = gr.Markdown()
                             fastag_ocr_json_out = gr.JSON(label="Full result")
                     fastag_ocr_run_btn.click(
                         run_fastag_ocr_individual,
-                        inputs=[fastag_ocr_image_in, fastag_dd, fastag_gm_dd],
+                        inputs=[fastag_ocr_image_in, fastag_dd, fastag_gm_dd, fastag_ocr_barcode_in],
                         outputs=[fastag_ocr_decision_out, fastag_ocr_json_out],
                     )
 
