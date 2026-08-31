@@ -1,11 +1,14 @@
+import numpy as np
 import pytest
 
 from vfiv.side_image.side_image_check import (
+    _color_histogram_similarity,
     _worst_decision,
     check_axle_count,
     check_side_identity,
     classify_axle_count,
     decide_axle_count,
+    decide_axle_source_consistency,
 )
 
 
@@ -107,10 +110,11 @@ def test_check_side_identity_routes_to_vrn_visible_bucket(monkeypatch):
     assert result.checked is True
 
 
-def _stub_corner_view_deps(monkeypatch, similarity: float):
-    """Wires just enough of corner_view's dependency chain (detector + embeddings)
-    to exercise _identity_via_corner_view for real, while asserting the make
-    classifier is never touched -- it's reserved for pure_side_profile only now."""
+def _stub_corner_view_deps(monkeypatch, similarity: float, color_similarity: float = 1.0):
+    """Wires just enough of corner_view's dependency chain (detector + embeddings +
+    colour histogram) to exercise _identity_via_corner_view for real, while
+    asserting the make classifier is never touched -- it's reserved for
+    pure_side_profile only now."""
     import vfiv.side_image.side_image_check as side_module
 
     monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
@@ -127,6 +131,7 @@ def _stub_corner_view_deps(monkeypatch, similarity: float):
 
     monkeypatch.setattr(side_module, "get_siglip_model", lambda: _FakeSiglip())
     monkeypatch.setattr(side_module, "_cosine", lambda a, b: similarity)
+    monkeypatch.setattr(side_module, "_color_histogram_similarity", lambda a, b: color_similarity)
 
     def _fail_if_called(*args, **kwargs):
         raise AssertionError("corner_view must never call the make classifier")
@@ -191,7 +196,7 @@ def test_check_side_identity_routes_corner_view_without_claimed_make_dependency(
 
     seen = {}
 
-    def _fake_corner_view(image, front_reference_image, similarity_min=None):
+    def _fake_corner_view(image, front_reference_image, similarity_min=None, color_hist_min=None):
         seen["called"] = True
         return "PASS", "[corner_view] front-similarity 0.99", {"bucket": "corner_view", "front_similarity": 0.99}
 
@@ -202,3 +207,100 @@ def test_check_side_identity_routes_corner_view_without_claimed_make_dependency(
     assert seen["called"] is True
     assert result.decision == "PASS"
     assert result.identity_bucket == "corner_view"
+
+
+def test_color_histogram_similarity_identical_crops_is_near_one():
+    crop = np.random.default_rng(0).integers(0, 255, size=(40, 40, 3), dtype=np.uint8)
+    assert _color_histogram_similarity(crop, crop) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_color_histogram_similarity_distinguishes_solid_colours():
+    """A solid red truck crop vs. a solid blue one -- about as clear-cut a
+    different-colour-vehicle case as it gets -- must score far below a same-crop
+    comparison, not just marginally lower."""
+    red = np.zeros((40, 40, 3), dtype=np.uint8)
+    red[..., 0] = 200
+    blue = np.zeros((40, 40, 3), dtype=np.uint8)
+    blue[..., 2] = 200
+    same = _color_histogram_similarity(red, red)
+    different = _color_histogram_similarity(red, blue)
+    assert different < same
+
+
+def test_axle_source_consistency_auto_is_always_trusted():
+    """auto-filled (straight from RC) is trusted as-is -- no vehicle_mapper needed,
+    and no cross-check even if the count would disagree with a mapper class."""
+    result = decide_axle_source_consistency(claimed_axle_count=4, axle_source="auto", vehicle_mapper=None)
+    assert result["decision"] == "PASS"
+
+
+def test_axle_source_consistency_manual_matching_mapper_passes():
+    result = decide_axle_source_consistency(claimed_axle_count=4, axle_source="manual", vehicle_mapper="VC12")
+    assert result["decision"] == "PASS"
+
+
+def test_axle_source_consistency_manual_mismatching_mapper_rejects():
+    """VC12 implies 4 axles -- an agent claiming 6 for a VC12-classified vehicle
+    disagrees with the vehicle's own RC-derived class."""
+    result = decide_axle_source_consistency(claimed_axle_count=6, axle_source="manual", vehicle_mapper="VC12")
+    assert result["decision"] == "REJECT"
+    assert "VC12" in result["reason"]
+
+
+def test_axle_source_consistency_manual_without_mapper_is_manual_review():
+    result = decide_axle_source_consistency(claimed_axle_count=4, axle_source="manual", vehicle_mapper=None)
+    assert result["decision"] == "MANUAL_REVIEW"
+
+
+def test_axle_source_consistency_unknown_mapper_code_is_manual_review():
+    result = decide_axle_source_consistency(claimed_axle_count=4, axle_source="manual", vehicle_mapper="VC999")
+    assert result["decision"] == "MANUAL_REVIEW"
+    assert "unknown vehicle mapper" in result["reason"]
+
+
+def test_axle_source_consistency_mapper_with_no_defined_axle_count():
+    """VC4 (Car) has no axle count in the source table -- nothing to compare
+    against, so this is unresolved rather than a false mismatch."""
+    result = decide_axle_source_consistency(claimed_axle_count=2, axle_source="manual", vehicle_mapper="VC4")
+    assert result["decision"] == "MANUAL_REVIEW"
+
+
+def test_axle_source_consistency_unknown_source_value():
+    result = decide_axle_source_consistency(claimed_axle_count=4, axle_source="bogus", vehicle_mapper="VC12")
+    assert result["decision"] == "MANUAL_REVIEW"
+
+
+def test_check_axle_count_skips_source_consistency_without_axle_source(monkeypatch):
+    """axle_source is opt-in -- omitting it must not touch
+    decide_axle_source_consistency at all, and the resulting fields stay None."""
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "classify_axle_count",
+                        lambda image, backend, model=None: _axle_read(4))
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("decide_axle_source_consistency should not run without axle_source")
+
+    monkeypatch.setattr(side_module, "decide_axle_source_consistency", _fail_if_called)
+
+    result = check_axle_count("does-not-matter.jpg", claimed_axle_count=4)
+    assert result.decision == "PASS"
+    assert result.axle_source is None
+    assert result.mapper_expected_axle_count is None
+
+
+def test_check_axle_count_folds_in_source_consistency_mismatch(monkeypatch):
+    """A photo that matches the claimed count can still be REJECTed overall if the
+    manually-entered count disagrees with the vehicle's own RC-derived mapper
+    class -- two independent signals, worst-of."""
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "classify_axle_count",
+                        lambda image, backend, model=None: _axle_read(6))
+
+    result = check_axle_count("does-not-matter.jpg", claimed_axle_count=6,
+                              axle_source="manual", vehicle_mapper="VC12")
+    assert result.status == "MATCH"  # the photo-vs-claim check itself passed
+    assert result.decision == "REJECT"  # but source-consistency overrides it
+    assert result.mapper_expected_axle_count == 4
+    assert "source-consistency" in result.reason

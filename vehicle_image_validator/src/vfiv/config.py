@@ -127,3 +127,11 @@ AXLE_COUNT_BACKEND = os.environ.get("VFIV_AXLE_COUNT_BACKEND", "claude")
 # against real same-truck vs. same-model-different-truck pairs before trusting
 # this threshold in production — see side_image_check.py's module docstring.
 SIDE_IMAGE_SIMILARITY_MIN = float(os.environ.get("VFIV_SIDE_IMAGE_SIMILARITY_MIN", "0.97"))
+
+# Colour-histogram correlation floor for the same corner-view/front-photo pair
+# (see SIDE_IMAGE_SIMILARITY_MIN above) -- a real, deterministic paint-colour
+# comparison (unlike the embedding check, no ML judgment call involved), but
+# UNCALIBRATED for the same reason: lighting/exposure can differ meaningfully
+# between two photos of the same truck shot at different times. Validate against
+# real same-truck vs. different-truck pairs before trusting this threshold.
+SIDE_IMAGE_COLOR_HIST_MIN = float(os.environ.get("VFIV_SIDE_IMAGE_COLOR_HIST_MIN", "0.8"))

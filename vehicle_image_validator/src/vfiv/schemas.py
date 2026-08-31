@@ -138,6 +138,9 @@ class AxleCountResult(BaseModel):
     axle_count: Optional[int] = None
     axle_confidence: Optional[float] = None  # 0..100
     lift_axle_suspected: Optional[bool] = None
+    axle_source: Optional[str] = None  # "auto" | "manual" -- see decide_axle_source_consistency
+    vehicle_mapper: Optional[str] = None  # RC-derived vehicle class code, e.g. "VC12"
+    mapper_expected_axle_count: Optional[int] = None  # axle_source == "manual" only
     reason: str
     error: Optional[str] = None
 
@@ -156,6 +159,7 @@ class SideImageIdentityResult(BaseModel):
     make_read: Optional[str] = None
     make_matched: Optional[bool] = None
     front_similarity: Optional[float] = None  # 0..1, corner_view bucket only
+    color_hist_similarity: Optional[float] = None  # -1..1, corner_view bucket only
     vrn_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE, vrn_visible bucket only
     reason: str
     error: Optional[str] = None
@@ -177,6 +181,8 @@ class SideImageCheckResult(BaseModel):
     claimed_axle_count: int
     axle_count: Optional[int] = None
     axle_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
+    axle_source: Optional[str] = None  # "auto" | "manual"
+    mapper_expected_axle_count: Optional[int] = None  # axle_source == "manual" only
     identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
     identity_decision: Optional[str] = None
     duplicate_is_suspect: Optional[bool] = None

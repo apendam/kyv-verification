@@ -333,13 +333,15 @@ def run_fastag_individual(image, fastag_id, bank_code, backend, gemini_model,
 
 # --- Side/axle: axle count only ----------------------------------------------------
 
-def run_axle_individual(image, axle_count, axle_backend, gemini_model):
+def run_axle_individual(image, axle_count, axle_backend, gemini_model, axle_source, vehicle_mapper):
     if image is None:
         return "### Upload an image first.", {}
     if axle_count is None:
         return "### Claimed axle count is required.", {}
     result = check_axle_count(image, int(axle_count), backend=axle_backend,
-                              model=gemini_model if axle_backend == "gemini" else None)
+                              model=gemini_model if axle_backend == "gemini" else None,
+                              axle_source=_clean_optional(axle_source),
+                              vehicle_mapper=_clean_optional(vehicle_mapper))
     return _banner(result.decision, result.reason), result.model_dump()
 
 
@@ -369,7 +371,7 @@ def run_side_duplicate_individual(image, truck_number, upload_id, top_k, similar
 # --- Side/axle: end-to-end ----------------------------------------------------------
 
 def run_side_individual(image, truck_number, make, axle_count, upload_id, front_reference,
-                        axle_backend, gemini_model):
+                        axle_backend, gemini_model, axle_source, vehicle_mapper):
     if image is None:
         return "### Upload an image first.", {}
     if not truck_number or not make or axle_count is None:
@@ -378,6 +380,7 @@ def run_side_individual(image, truck_number, make, axle_count, upload_id, front_
         image, truck_number, make, int(axle_count),
         upload_id=_upload_id_or_random(upload_id), front_reference_image=front_reference,
         axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
+        axle_source=_clean_optional(axle_source), vehicle_mapper=_clean_optional(vehicle_mapper),
     )
     return _banner(result.decision, result.reason), result.model_dump()
 
@@ -568,13 +571,21 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                         with gr.Column():
                             axle_image_in = gr.Image(type="pil", label="Upload side/axle photo")
                             axle_count_in = gr.Number(label="Claimed axle count", precision=0)
+                            axle_source_in = gr.Dropdown(
+                                ["", "auto", "manual"], value="",
+                                label="Axle count source (optional — leave blank to skip the RC "
+                                      "cross-check entirely)")
+                            axle_vehicle_mapper_in = gr.Textbox(
+                                label="Vehicle mapper class (e.g. VC12 — only used when source is "
+                                      "\"manual\")")
                             axle_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             axle_decision_out = gr.Markdown()
                             axle_json_out = gr.JSON(label="Full result")
                     axle_run_btn.click(
                         run_axle_individual,
-                        inputs=[axle_image_in, axle_count_in, axle_dd, axle_gm_dd],
+                        inputs=[axle_image_in, axle_count_in, axle_dd, axle_gm_dd,
+                               axle_source_in, axle_vehicle_mapper_in],
                         outputs=[axle_decision_out, axle_json_out],
                     )
 
@@ -644,6 +655,13 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                                       "duplicate check always runs)")
                             side_front_ref_in = gr.Image(
                                 type="pil", label="On-file front photo (optional, corner_view bucket only)")
+                            side_axle_source_in = gr.Dropdown(
+                                ["", "auto", "manual"], value="",
+                                label="Axle count source (optional — leave blank to skip the RC "
+                                      "cross-check entirely)")
+                            side_vehicle_mapper_in = gr.Textbox(
+                                label="Vehicle mapper class (e.g. VC12 — only used when source is "
+                                      "\"manual\")")
                             side_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             side_decision_out = gr.Markdown()
@@ -651,7 +669,8 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                     side_run_btn.click(
                         run_side_individual,
                         inputs=[side_image_in, side_vrn_in, side_make_in, side_axle_in,
-                               side_upload_id_in, side_front_ref_in, axle_dd, axle_gm_dd],
+                               side_upload_id_in, side_front_ref_in, axle_dd, axle_gm_dd,
+                               side_axle_source_in, side_vehicle_mapper_in],
                         outputs=[side_decision_out, side_json_out],
                     )
 

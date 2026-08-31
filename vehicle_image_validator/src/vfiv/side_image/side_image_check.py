@@ -104,6 +104,26 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom) if denom else 0.0
 
 
+def _color_histogram_similarity(crop_a: np.ndarray, crop_b: np.ndarray, bins: int = 32) -> float:
+    """Correlation between two RGB colour histograms, roughly -1..1 (1 = identical
+    colour distribution). A real, deterministic paint-colour comparison -- unlike
+    the embedding-similarity check's general semantic notion of "looks similar",
+    this only cares about colour. Callers MUST pass vehicle-only crops (e.g. from
+    ``get_vehicle_detector().best_truck()``), never full uncropped photos -- the
+    surrounding road/sky/background would otherwise dominate the histogram and
+    swamp the actual paint-colour signal."""
+    def _hist(crop: np.ndarray) -> np.ndarray:
+        channels = [np.histogram(crop[..., c], bins=bins, range=(0, 255))[0].astype(np.float64)
+                    for c in range(3)]
+        h = np.concatenate(channels)
+        return h / (h.sum() + 1e-8)
+
+    ha, hb = _hist(crop_a), _hist(crop_b)
+    ha, hb = ha - ha.mean(), hb - hb.mean()
+    denom = float(np.sqrt((ha ** 2).sum() * (hb ** 2).sum()))
+    return float((ha * hb).sum() / denom) if denom else 0.0
+
+
 AXLE_COUNT_BACKENDS = ["claude", "gemini"]
 
 
@@ -132,6 +152,67 @@ def classify_axle_count(
         "lift_axle_suspected": bool(r.get("lift_axle_suspected", False)),
         "reason": r.get("reason", ""),
     }
+
+
+# RC-derived vehicle mapper class -> the axle count that class implies, straight
+# from the classification table (same source as the "auto-filled" axle field, just
+# one hop removed via the vehicle's body/weight class rather than a direct RC
+# field). Several mapper classes share an axle count (e.g. VC20/VC9/VC7/VC5/VC10
+# are all 2-axle, split by weight/seat bands, not by axle count) -- that's fine,
+# this table only needs to answer "what axle count does THIS class imply", not the
+# reverse. "Car" (VC4) has no axle count of its own in the source table.
+VEHICLE_MAPPER_AXLE_COUNT: dict[str, int | None] = {
+    "VC4": None,   # Car
+    "VC20": 2,     # Bus/Truck <7.5T
+    "VC9": 2,      # Bus <12T, seats < 32
+    "VC7": 2,      # Bus <12T seats > 32, or Bus >12T
+    "VC8": 3,      # Bus, 3-axle
+    "VC5": 2,      # Truck >7.5T & <12T
+    "VC10": 2,     # Truck >12T
+    "VC11": 3,     # Truck, 3-axle
+    "VC12": 4,     # Truck, 4-axle
+    "VC13": 5,     # Truck, 5-axle
+    "VC14": 6,     # Truck, 6-axle
+    "VC15": 7,     # Truck, 7-axle
+}
+
+_UNKNOWN_MAPPER = object()
+
+
+def decide_axle_source_consistency(
+    claimed_axle_count: int,
+    axle_source: str,
+    vehicle_mapper: str | None,
+) -> dict:
+    """Pure data-consistency check -- no image involved at all. ``axle_source``
+    "auto" means ``claimed_axle_count`` was pulled straight from the RC and is
+    trusted as-is. "manual" means a field agent typed it in, so it's cross-checked
+    against ``vehicle_mapper``'s own RC-derived fixed axle count instead --
+    catching a fabricated count even before the photo is looked at."""
+    if axle_source == "auto":
+        return {"decision": "PASS", "status": "MATCH",
+                "reason": f"axle count {claimed_axle_count} auto-filled from RC — trusted as-is"}
+    if axle_source != "manual":
+        return {"decision": "MANUAL_REVIEW", "status": "UNREADABLE",
+                "reason": f"unknown axle_source {axle_source!r} (expected 'auto' or 'manual')"}
+    if not vehicle_mapper:
+        return {"decision": "MANUAL_REVIEW", "status": "UNREADABLE",
+                "reason": "manually-entered axle count has no vehicle mapper class to cross-check against"}
+
+    expected = VEHICLE_MAPPER_AXLE_COUNT.get(vehicle_mapper, _UNKNOWN_MAPPER)
+    if expected is _UNKNOWN_MAPPER:
+        return {"decision": "MANUAL_REVIEW", "status": "UNREADABLE",
+                "reason": f"unknown vehicle mapper class {vehicle_mapper!r}"}
+    if expected is None:
+        return {"decision": "MANUAL_REVIEW", "status": "UNREADABLE",
+                "reason": f"vehicle mapper class {vehicle_mapper!r} has no defined axle count"}
+    if claimed_axle_count == expected:
+        return {"decision": "PASS", "status": "MATCH",
+                "reason": (f"manually-entered axle count {claimed_axle_count} matches vehicle "
+                           f"mapper {vehicle_mapper!r}'s expected {expected}")}
+    return {"decision": "REJECT", "status": "MISMATCH",
+            "reason": (f"manually-entered axle count {claimed_axle_count} != vehicle mapper "
+                       f"{vehicle_mapper!r}'s expected {expected}")}
 
 
 def decide_axle_count(
@@ -165,46 +246,63 @@ def _identity_via_vrn(image, claimed_vrn: str) -> tuple[str, str, dict]:
     return vrn_result.decision, f"[vrn_visible] {vrn_result.reason}", detail
 
 
+def _truck_crop(image) -> np.ndarray:
+    arr = load_rgb_array(image)
+    det = get_vehicle_detector().best_truck(arr)
+    return arr[det.bbox[1]:det.bbox[3], det.bbox[0]:det.bbox[2]] if det is not None else arr
+
+
 def _identity_via_corner_view(
     image, front_reference_image,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
+    color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
 ) -> tuple[str, str, dict]:
-    """Identity here rests entirely on a direct 1:1 SigLIP embedding comparison
-    against this truck's OWN on-file front photo -- a much stronger signal than the
-    generic 8-brand make classifier (see ``_identity_via_pure_side_profile``),
-    which can't tell THIS Tata from any other Tata, only "Tata-shaped or not" (and
-    not even reliably that -- see MakeClassifier's docstring). No make check here
-    at all; without a ``front_reference_image`` there is nothing to compare
-    against, so identity is simply unverifiable from a corner view alone."""
-    detail = {"bucket": "corner_view", "front_similarity": None}
+    """Identity here rests on TWO signals against this truck's OWN on-file front
+    photo -- a SigLIP embedding comparison (general "looks like the same vehicle")
+    and a colour-histogram comparison (specifically "same paint colour") -- both
+    much stronger than the generic 8-brand make classifier (see
+    ``_identity_via_pure_side_profile``), which can't tell THIS Tata from any other
+    Tata, only "Tata-shaped or not" (and not even reliably that -- see
+    MakeClassifier's docstring). No make check here at all; without a
+    ``front_reference_image`` there is nothing to compare against, so identity is
+    simply unverifiable from a corner view alone. Both crops are vehicle-only (via
+    the detector), never the raw uncropped photo -- background/road/sky colour
+    would otherwise swamp the histogram signal."""
+    detail = {"bucket": "corner_view", "front_similarity": None, "color_hist_similarity": None}
 
     if front_reference_image is None:
         return ("MANUAL_REVIEW",
                 "[corner_view] no front reference photo supplied — identity isn't "
                 "verifiable from a corner view alone", detail)
 
-    arr = load_rgb_array(image)
-    det = get_vehicle_detector().best_truck(arr)
-    crop = arr[det.bbox[1]:det.bbox[3], det.bbox[0]:det.bbox[2]] if det is not None else arr
+    crop = _truck_crop(image)
+    ref_crop = _truck_crop(front_reference_image)
 
     siglip = get_siglip_model()
-    emb_a = siglip.embed_image(crop)
-    emb_b = siglip.embed_image(load_rgb_array(front_reference_image))
-    similarity = _cosine(emb_a, emb_b)
+    similarity = _cosine(siglip.embed_image(crop), siglip.embed_image(ref_crop))
     detail["front_similarity"] = similarity
 
+    color_similarity = _color_histogram_similarity(crop, ref_crop)
+    detail["color_hist_similarity"] = color_similarity
+
+    failures = []
     if similarity < similarity_min:
+        failures.append(f"front-similarity {similarity:.4f} < {similarity_min:.4f}")
+    if color_similarity < color_hist_min:
+        failures.append(f"colour-histogram similarity {color_similarity:.4f} < {color_hist_min:.4f}")
+
+    if failures:
         return ("MANUAL_REVIEW",
-                (f"[corner_view] front-similarity {similarity:.4f} < {similarity_min:.4f} "
-                 "— uncalibrated signal, human check"), detail)
-    return "PASS", f"[corner_view] front-similarity {similarity:.4f}", detail
+                "[corner_view] " + "; ".join(failures) + " — uncalibrated signal(s), human check",
+                detail)
+    return ("PASS",
+            f"[corner_view] front-similarity {similarity:.4f}, colour-histogram {color_similarity:.4f}",
+            detail)
 
 
 def _identity_via_pure_side_profile(image, claimed_make: str) -> tuple[str, str, dict]:
     """Make/model-level ONLY — see module docstring. Never a confident PASS."""
-    arr = load_rgb_array(image)
-    det = get_vehicle_detector().best_truck(arr)
-    crop = arr[det.bbox[1]:det.bbox[3], det.bbox[0]:det.bbox[2]] if det is not None else arr
+    crop = _truck_crop(image)
     siglip_make = get_make_classifier().predict(crop)
     make_match = match_make(siglip_make["make"], claimed_make)
     detail = {"bucket": "pure_side_profile", "make_read": siglip_make["make"],
@@ -222,28 +320,51 @@ def check_axle_count(
     backend: str = config.AXLE_COUNT_BACKEND,
     model: str | None = None,
     conf_min: float = config.AXLE_COUNT_CONF_MIN,
+    axle_source: str | None = None,
+    vehicle_mapper: str | None = None,
 ) -> AxleCountResult:
     """Axle-count in isolation — classify then decide (see module docstring for why
     no dedicated detector is wired). Reused by ``check_side_image_upload``; exposed
-    standalone so it's independently testable from identity-binding/duplicate."""
+    standalone so it's independently testable from identity-binding/duplicate.
+
+    Pass BOTH ``axle_source`` ("auto" | "manual") and (for "manual")
+    ``vehicle_mapper`` to also run ``decide_axle_source_consistency`` and fold its
+    verdict in (worst-of) — an RC-derived data check independent of the photo.
+    Leaving ``axle_source`` unset skips it entirely (opt-in, same pattern as the
+    duplicate check elsewhere)."""
     try:
         raw = classify_axle_count(image, backend=backend, model=model)
     except Exception as e:
         return AxleCountResult(
             decision="MANUAL_REVIEW", checked=False, claimed_axle_count=claimed_axle_count,
+            axle_source=axle_source, vehicle_mapper=vehicle_mapper,
             reason=f"axle check unavailable ({e})", error=str(e),
         )
     if not raw.get("checked"):
         return AxleCountResult(
             decision="MANUAL_REVIEW", checked=False, claimed_axle_count=claimed_axle_count,
+            axle_source=axle_source, vehicle_mapper=vehicle_mapper,
             reason=f"axle check unavailable ({raw.get('error', '?')})", error=raw.get("error"),
         )
     decided = decide_axle_count(raw, claimed_axle_count, conf_min)
+
+    if axle_source is None:
+        return AxleCountResult(
+            decision=decided["decision"], status=decided["status"], checked=True,
+            claimed_axle_count=claimed_axle_count, axle_count=raw.get("axle_count"),
+            axle_confidence=raw.get("axle_confidence"), lift_axle_suspected=raw.get("lift_axle_suspected"),
+            reason=decided["reason"],
+        )
+
+    consistency = decide_axle_source_consistency(claimed_axle_count, axle_source, vehicle_mapper)
+    mapper_expected = VEHICLE_MAPPER_AXLE_COUNT.get(vehicle_mapper) if vehicle_mapper else None
     return AxleCountResult(
-        decision=decided["decision"], status=decided["status"], checked=True,
+        decision=_worst_decision(decided["decision"], consistency["decision"]),
+        status=decided["status"], checked=True,
         claimed_axle_count=claimed_axle_count, axle_count=raw.get("axle_count"),
         axle_confidence=raw.get("axle_confidence"), lift_axle_suspected=raw.get("lift_axle_suspected"),
-        reason=decided["reason"],
+        axle_source=axle_source, vehicle_mapper=vehicle_mapper, mapper_expected_axle_count=mapper_expected,
+        reason=f"{decided['reason']}; source-consistency: {consistency['reason']}",
     )
 
 
@@ -253,6 +374,7 @@ def check_side_identity(
     claimed_make: str,
     front_reference_image=None,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
+    color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
 ) -> SideImageIdentityResult:
     """Identity-binding in isolation — routed by ``SideImageTypeClassifier`` into
     vrn_visible / corner_view / pure_side_profile (see module docstring). Reused by
@@ -260,10 +382,10 @@ def check_side_identity(
     from axle-count/duplicate.
 
     ``front_reference_image`` is this truck's own already-accepted front photo,
-    used by the corner-view bucket's embedding-similarity check — its only
-    identity signal; without it, that bucket is MANUAL_REVIEW ("unverifiable")
-    rather than falling back to the weaker make classifier (which is reserved
-    for the pure-side-profile bucket only — see module docstring)."""
+    used by the corner-view bucket's embedding-similarity AND colour-histogram
+    checks — its only identity signals; without it, that bucket is MANUAL_REVIEW
+    ("unverifiable") rather than falling back to the weaker make classifier (which
+    is reserved for the pure-side-profile bucket only — see module docstring)."""
     try:
         arr = load_rgb_array(image)
         bucket = get_side_image_type_classifier().predict(arr)["bucket"]
@@ -271,7 +393,7 @@ def check_side_identity(
             decision, reason, detail = _identity_via_vrn(image, claimed_vrn)
         elif bucket == "corner_view":
             decision, reason, detail = _identity_via_corner_view(
-                image, front_reference_image, similarity_min)
+                image, front_reference_image, similarity_min, color_hist_min)
         else:
             decision, reason, detail = _identity_via_pure_side_profile(image, claimed_make)
     except Exception as e:
@@ -283,6 +405,7 @@ def check_side_identity(
         decision=decision, checked=True, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
         identity_bucket=detail.get("bucket"), make_read=detail.get("make_read"),
         make_matched=detail.get("make_matched"), front_similarity=detail.get("front_similarity"),
+        color_hist_similarity=detail.get("color_hist_similarity"),
         vrn_status=detail.get("vrn_status"), reason=reason,
     )
 
@@ -296,8 +419,11 @@ def check_side_image_upload(
     front_reference_image=None,
     axle_conf_min: float = config.AXLE_COUNT_CONF_MIN,
     side_image_similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
+    side_image_color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
     axle_backend: str = config.AXLE_COUNT_BACKEND,
     axle_model: str | None = None,
+    axle_source: str | None = None,
+    vehicle_mapper: str | None = None,
 ) -> SideImageCheckResult:
     """The single entry point for a side/axle-image upload. Runs duplicate check
     (if ``upload_id`` given), axle count (``check_axle_count``), and identity-
@@ -306,13 +432,18 @@ def check_side_image_upload(
 
     ``axle_backend`` — "claude" (default) | "gemini" — selects which model reads
     the axle count; the identity/duplicate checks are unaffected by this.
+
+    Pass ``axle_source`` ("auto" | "manual") + (for "manual") ``vehicle_mapper`` to
+    also run the RC-derived axle-count consistency check — see
+    ``check_axle_count``'s docstring.
     """
     try:
         dup = check_duplicate(image, upload_id, claimed_vrn, image_type="side") if upload_id else None
         axle = check_axle_count(image, claimed_axle_count, backend=axle_backend,
-                                model=axle_model, conf_min=axle_conf_min)
-        identity = check_side_identity(image, claimed_vrn, claimed_make,
-                                       front_reference_image, side_image_similarity_min)
+                                model=axle_model, conf_min=axle_conf_min,
+                                axle_source=axle_source, vehicle_mapper=vehicle_mapper)
+        identity = check_side_identity(image, claimed_vrn, claimed_make, front_reference_image,
+                                       side_image_similarity_min, side_image_color_hist_min)
     except Exception as e:
         return SideImageCheckResult(
             decision="MANUAL_REVIEW", checked=False,
@@ -338,6 +469,8 @@ def check_side_image_upload(
         claimed_axle_count=claimed_axle_count,
         axle_count=axle.axle_count,
         axle_status=axle.status,
+        axle_source=axle.axle_source,
+        mapper_expected_axle_count=axle.mapper_expected_axle_count,
         identity_bucket=identity.identity_bucket,
         identity_decision=identity.decision,
         duplicate_is_suspect=dup.is_duplicate_suspect if dup is not None else None,
