@@ -499,16 +499,24 @@ suspected lift axles, rather than silently guessing from a wheel count or a clas
 assumption.
 
 **Identity-to-claimed-vehicle** — does this side photo belong to the SAME truck as
-the claimed VRN/make? Routed by `SideImageTypeClassifier`
-(`backends/siglip.py`) into three buckets of **decreasing** reliability. The
-`corner_view` vs. `pure_side_profile` split is anchored on **windshield
-visibility**: a true side profile is shot perpendicular to the truck's length, so
-the (forward-facing) windshield is edge-on or invisible; any shot where the
-windshield is actually visible implies a forward-facing viewing angle, which by
-definition makes it a corner/three-quarter shot — a sharper, more concrete visual
-cue for this zero-shot embedding comparison than the original vague "shows both
-front and side" wording (confirmed against a real corner-view upload that kept
-misrouting to `pure_side_profile` during manual testing).
+the claimed VRN/make? Routed by `classify_side_image_type()`
+(`side_image_check.py`, `SIDE_IMAGE_TYPE_PROMPT`) into three buckets of
+**decreasing** reliability. This used to be a SigLIP zero-shot embedding
+comparison (`backends/siglip.py`'s `SideImageTypeClassifier`, now removed
+entirely) — it kept misrouting a genuine corner-view upload where the side of
+the cargo box dominates the frame, and rewording its text prompts around
+**windshield visibility** (the real discriminator: a true side profile is shot
+perpendicular to the truck's length, so the forward-facing windshield is edge-on
+or invisible; any shot where it's actually visible implies a forward-facing
+viewing angle, which by definition makes it a corner/three-quarter shot) still
+wasn't enough — rewording the TEXT side of a zero-shot comparison can't change
+how the IMAGE itself embeds, so a stubbornly "side-profile-shaped" photo stayed
+misrouted regardless of wording. Replaced with a VLM call (Claude/Gemini,
+`config.SIDE_IMAGE_TYPE_BACKEND`) that reasons explicitly about windshield/plate
+visibility and cites its evidence — the same "reasoning over embedding-
+similarity" fix already applied to axle counting above. Degrades to
+`MANUAL_REVIEW` (not a crash) if the VLM call itself is unavailable (missing
+credentials, etc.), same posture as every other VLM-backed check here.
 
 | Bucket | Strategy | Reliability |
 |---|---|---|

@@ -347,12 +347,14 @@ def run_axle_individual(image, axle_count, axle_backend, gemini_model, axle_sour
 
 # --- Side/axle: identity binding only -----------------------------------------------
 
-def run_identity_individual(image, truck_number, make, front_reference):
+def run_identity_individual(image, truck_number, make, front_reference, axle_backend, gemini_model):
     if image is None:
         return "### Upload an image first.", {}
     if not truck_number or not make:
         return "### Truck number and make are both required.", {}
-    result = check_side_identity(image, truck_number, make, front_reference_image=front_reference)
+    result = check_side_identity(image, truck_number, make, front_reference_image=front_reference,
+                                 type_backend=axle_backend,
+                                 type_model=gemini_model if axle_backend == "gemini" else None)
     return _banner(result.decision, result.reason), result.model_dump()
 
 
@@ -381,6 +383,7 @@ def run_side_individual(image, truck_number, make, axle_count, upload_id, front_
         upload_id=_upload_id_or_random(upload_id), front_reference_image=front_reference,
         axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
         axle_source=_clean_optional(axle_source), vehicle_mapper=_clean_optional(vehicle_mapper),
+        type_backend=axle_backend, type_model=gemini_model if axle_backend == "gemini" else None,
     )
     return _banner(result.decision, result.reason), result.model_dump()
 
@@ -559,7 +562,7 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                 "all three (worst of the three wins)."
             )
             axle_dd = gr.Dropdown(AXLE_COUNT_BACKENDS, value=config.AXLE_COUNT_BACKEND,
-                                  label="Axle-count model backend")
+                                  label="Model backend (axle count read + identity-bucket routing)")
             with gr.Accordion("Gemini model (only used if the backend above is \"gemini\")", open=False):
                 axle_gm_dd = gr.Dropdown(GEMINI_MODEL_CHOICES, value=config.GEMINI_MODEL,
                                          allow_custom_value=True, label="Gemini model")
@@ -604,7 +607,8 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                             identity_json_out = gr.JSON(label="Full result")
                     identity_run_btn.click(
                         run_identity_individual,
-                        inputs=[identity_image_in, identity_vrn_in, identity_make_in, identity_front_ref_in],
+                        inputs=[identity_image_in, identity_vrn_in, identity_make_in, identity_front_ref_in,
+                               axle_dd, axle_gm_dd],
                         outputs=[identity_decision_out, identity_json_out],
                     )
 

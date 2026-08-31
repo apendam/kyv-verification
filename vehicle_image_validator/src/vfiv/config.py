@@ -119,6 +119,15 @@ FASTAG_OCR_BACKEND = os.environ.get("VFIV_FASTAG_OCR_BACKEND", "rekognition")
 AXLE_COUNT_CONF_MIN = float(os.environ.get("VFIV_AXLE_COUNT_CONF_MIN", "70.0"))
 AXLE_COUNT_BACKEND = os.environ.get("VFIV_AXLE_COUNT_BACKEND", "claude")
 
+# Which model classifies a side/axle photo into vrn_visible | corner_view |
+# pure_side_profile (see side_image_check.py's module docstring). A VLM judgment
+# call, not a zero-shot embedding comparison -- the earlier SigLIP-based
+# classifier kept misrouting photos where the windshield/plate visibility cue
+# that actually distinguishes the buckets was a small part of the frame, and
+# rewording its text prompts couldn't fix that (changing the TEXT side of a
+# zero-shot comparison can't change how the IMAGE itself embeds).
+SIDE_IMAGE_TYPE_BACKEND = os.environ.get("VFIV_SIDE_IMAGE_TYPE_BACKEND", "claude")
+
 # Cosine-similarity floor for "this corner-shot's vehicle crop looks like the same
 # truck as the claimed vehicle's on-file front photo". UNCALIBRATED -- a general
 # SigLIP embedding is trained for semantic similarity (what make/model is this),

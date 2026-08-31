@@ -19,10 +19,18 @@ docstring for why this has to live in code, same reasoning applies here):
    and dual/twin wheels on one axle (2 wheels != 2 axles) — the prompt asks the
    model to flag suspected lift axles rather than silently guess.
 
-3. Identity-to-claimed-vehicle — routed by ``SideImageTypeClassifier``
-   (``backends/siglip.py``) into three buckets of DECREASING reliability. NO
-   bucket uses the make classifier any more (see below for why it was dropped
-   from both places that used to lean on it):
+3. Identity-to-claimed-vehicle — routed by ``classify_side_image_type`` (a VLM
+   call, see its docstring) into three buckets of DECREASING reliability. This
+   used to be a SigLIP zero-shot embedding comparison
+   (``backends/siglip.py``'s ``SideImageTypeClassifier``, now removed) but that
+   kept misrouting a genuine corner-view upload where the side of the cargo box
+   dominates the frame — no amount of rewording its text prompts could fix it,
+   since reworking the TEXT side of a zero-shot comparison can't change how the
+   IMAGE itself embeds. The VLM version instead reasons explicitly about
+   windshield/plate visibility and cites its evidence, the same "reasoning over
+   embedding-similarity" fix already applied to axle counting above. NO bucket
+   uses the make classifier any more (see below for why it was dropped from
+   both places that used to lean on it):
      a. vrn_visible       -> re-run Q2's own VRN detector/matcher on this image
                              (strongest — exact identity, reuses ``vrn_check.py``
                              as-is, no new logic).
@@ -86,7 +94,7 @@ import numpy as np
 
 from vfiv import config
 from vfiv.backends.image_io import load_rgb_array
-from vfiv.backends.siglip import get_side_image_type_classifier, get_siglip_model
+from vfiv.backends.siglip import get_siglip_model
 from vfiv.backends.vehicle import get_vehicle_detector
 from vfiv.schemas import AxleCountResult, SideImageCheckResult, SideImageIdentityResult
 from vfiv.base import call_vlm_json
@@ -182,6 +190,59 @@ def _color_histogram_similarity(crop_a: np.ndarray, crop_b: np.ndarray, bins: in
     ha, hb = ha - ha.mean(), hb - hb.mean()
     denom = float(np.sqrt((ha ** 2).sum() * (hb ** 2).sum()))
     return float((ha * hb).sum() / denom) if denom else 0.0
+
+
+SIDE_IMAGE_TYPE_PROMPT = """You are classifying what a side/axle-image upload actually
+shows, for a document-validation platform that routes to a different identity-checking
+strategy depending on the answer. Decide which ONE of these three categories the photo
+belongs to:
+
+- "vrn_visible": the side of the truck is shown with a LEGIBLE license plate /
+  registration number visible somewhere in the frame.
+- "corner_view": a three-quarter/angled shot where the WINDSHIELD is visible (even
+  partially, at an angle) alongside the side of the truck body. The windshield is the
+  key test: a true side profile is shot perpendicular to the truck's length, so the
+  forward-facing windshield would be edge-on or invisible; if you can see the glass
+  panel of the windshield at all, that's a forward-facing viewing-angle component,
+  which makes this a corner/three-quarter shot -- even if most of the frame is taken up
+  by the long side of the truck body/cargo box.
+- "pure_side_profile": shot perpendicular to the truck's length -- the windshield is
+  edge-on or not visible at all, and no legible plate is visible either.
+
+If BOTH a legible plate AND a visible windshield are present, prefer "vrn_visible" --
+it's the stronger identity signal. Base your answer ONLY on what's actually visible in
+THIS specific photo, not on how this kind of upload is typically framed.
+
+Reply with STRICT JSON only, in this field order:
+{"reason":"<short -- cite whether the windshield and/or plate are actually visible>","bucket":"vrn_visible"|"corner_view"|"pure_side_profile"}"""
+
+SIDE_IMAGE_TYPE_BACKENDS = ["claude", "gemini"]
+SIDE_IMAGE_BUCKETS = ("vrn_visible", "corner_view", "pure_side_profile")
+
+
+def classify_side_image_type(
+    image,
+    backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
+    model: str | None = None,
+) -> dict:
+    """Which of the three identity-binding buckets (see module docstring) this
+    photo belongs to — a VLM judgment call anchored on windshield/plate
+    visibility, not a zero-shot embedding comparison. Replaced the earlier SigLIP-
+    based ``SideImageTypeClassifier``: it kept misrouting a genuine corner-view
+    upload where the side of the cargo box dominates the frame, and no amount of
+    rewording its text prompts could fix that — rewording the TEXT side of a
+    zero-shot comparison can't change how the IMAGE itself embeds, so a
+    stubbornly "side-profile-shaped" photo stayed misrouted regardless of wording.
+    ``backend`` — "claude" (default) | "gemini"."""
+    if backend == "claude":
+        r = call_vlm_json(image, SIDE_IMAGE_TYPE_PROMPT, model or config.VLM_MODEL, max_tokens=200)
+    elif backend == "gemini":
+        from vfiv.backends.gemini import call_gemini_json
+        r = call_gemini_json(image, SIDE_IMAGE_TYPE_PROMPT, model=model)
+    else:
+        raise ValueError(f"unknown side-image-type backend: {backend!r} "
+                         f"(expected one of {SIDE_IMAGE_TYPE_BACKENDS})")
+    return r
 
 
 AXLE_COUNT_BACKENDS = ["claude", "gemini"]
@@ -465,11 +526,14 @@ def check_side_identity(
     front_reference_image=None,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
     color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
+    type_backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
+    type_model: str | None = None,
 ) -> SideImageIdentityResult:
-    """Identity-binding in isolation — routed by ``SideImageTypeClassifier`` into
-    vrn_visible / corner_view / pure_side_profile (see module docstring). Reused by
-    ``check_side_image_upload``; exposed standalone so it's independently testable
-    from axle-count/duplicate.
+    """Identity-binding in isolation — routed by ``classify_side_image_type`` (a
+    VLM call, see its docstring for why this isn't a SigLIP zero-shot comparison
+    any more) into vrn_visible / corner_view / pure_side_profile (see module
+    docstring). Reused by ``check_side_image_upload``; exposed standalone so it's
+    independently testable from axle-count/duplicate.
 
     ``front_reference_image`` is this truck's own already-accepted front photo —
     used by corner_view's embedding-similarity AND colour-histogram checks, and by
@@ -478,8 +542,19 @@ def check_side_identity(
     ("unverifiable"); no bucket falls back to the make classifier any more (see
     module docstring for why it was dropped from both)."""
     try:
-        arr = load_rgb_array(image)
-        bucket = get_side_image_type_classifier().predict(arr)["bucket"]
+        type_raw = classify_side_image_type(image, backend=type_backend, model=type_model)
+        if not type_raw.get("checked"):
+            return SideImageIdentityResult(
+                decision="MANUAL_REVIEW", checked=False, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
+                reason=f"side-image type classification unavailable ({type_raw.get('error', '?')})",
+                error=type_raw.get("error"),
+            )
+        bucket = type_raw.get("bucket")
+        if bucket not in SIDE_IMAGE_BUCKETS:
+            return SideImageIdentityResult(
+                decision="MANUAL_REVIEW", checked=False, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
+                reason=f"side-image type classification returned an unrecognized bucket ({bucket!r})",
+            )
         if bucket == "vrn_visible":
             decision, reason, detail = _identity_via_vrn(image, claimed_vrn)
         elif bucket == "corner_view":
@@ -493,11 +568,13 @@ def check_side_identity(
             decision="MANUAL_REVIEW", checked=False, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
             reason=f"identity check unavailable ({e})", error=str(e),
         )
+    routing_reason = type_raw.get("reason", "")
+    full_reason = f"{reason} [bucket routing: {routing_reason}]" if routing_reason else reason
     return SideImageIdentityResult(
         decision=decision, checked=True, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
         identity_bucket=detail.get("bucket"), front_similarity=detail.get("front_similarity"),
         color_hist_similarity=detail.get("color_hist_similarity"),
-        vrn_status=detail.get("vrn_status"), reason=reason,
+        vrn_status=detail.get("vrn_status"), reason=full_reason,
     )
 
 
@@ -515,6 +592,8 @@ def check_side_image_upload(
     axle_model: str | None = None,
     axle_source: str | None = None,
     vehicle_mapper: str | None = None,
+    type_backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
+    type_model: str | None = None,
 ) -> SideImageCheckResult:
     """The single entry point for a side/axle-image upload. Runs duplicate check
     (if ``upload_id`` given), axle count (``check_axle_count``), and identity-
@@ -522,7 +601,10 @@ def check_side_image_upload(
     whichever checks ran — see module docstring for the full breakdown.
 
     ``axle_backend`` — "claude" (default) | "gemini" — selects which model reads
-    the axle count; the identity/duplicate checks are unaffected by this.
+    the axle count. ``type_backend`` — same choices — selects which model routes
+    the identity-binding bucket (``classify_side_image_type``); independent of
+    ``axle_backend`` since they're separate VLM calls, though callers commonly
+    pass the same value for both (see the webapp).
 
     Pass ``axle_source`` ("auto" | "manual") + (for "manual") ``vehicle_mapper`` to
     also run the RC-derived axle-count consistency check — see
@@ -534,7 +616,8 @@ def check_side_image_upload(
                                 model=axle_model, conf_min=axle_conf_min,
                                 axle_source=axle_source, vehicle_mapper=vehicle_mapper)
         identity = check_side_identity(image, claimed_vrn, claimed_make, front_reference_image,
-                                       side_image_similarity_min, side_image_color_hist_min)
+                                       side_image_similarity_min, side_image_color_hist_min,
+                                       type_backend=type_backend, type_model=type_model)
     except Exception as e:
         return SideImageCheckResult(
             decision="MANUAL_REVIEW", checked=False,

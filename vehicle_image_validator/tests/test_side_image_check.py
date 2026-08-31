@@ -98,16 +98,44 @@ def test_check_side_identity_routes_to_vrn_visible_bucket(monkeypatch):
     to the VRN-based identity check, not the corner/pure-side-profile arms."""
     import vfiv.side_image.side_image_check as side_module
 
-    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
-    monkeypatch.setattr(side_module, "get_side_image_type_classifier",
-                        lambda: type("_C", (), {"predict": lambda self, arr: {"bucket": "vrn_visible"}})())
+    monkeypatch.setattr(side_module, "classify_side_image_type",
+                        lambda image, backend, model=None: {"checked": True, "bucket": "vrn_visible",
+                                                            "reason": "plate legible"})
     monkeypatch.setattr(side_module, "_identity_via_vrn",
                         lambda image, claimed_vrn: ("PASS", "[vrn_visible] matched", {"bucket": "vrn_visible"}))
 
     result = check_side_identity("does-not-matter.jpg", claimed_vrn="UP42T4069", claimed_make="TATA MOTORS LTD")
     assert result.decision == "PASS"
     assert result.identity_bucket == "vrn_visible"
-    assert result.checked is True
+    assert "bucket routing: plate legible" in result.reason
+
+
+def test_check_side_identity_degrades_when_type_classifier_unavailable(monkeypatch):
+    """A missing API key/credentials for the bucket-routing VLM call must degrade
+    to MANUAL_REVIEW, not crash -- same posture as every other VLM-backed check
+    in this codebase."""
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "classify_side_image_type",
+                        lambda image, backend, model=None: {"checked": False, "error": "no ANTHROPIC_API_KEY"})
+
+    result = check_side_identity("does-not-matter.jpg", claimed_vrn="UP42T4069", claimed_make="TATA MOTORS LTD")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "no ANTHROPIC_API_KEY" in result.reason
+
+
+def test_check_side_identity_degrades_on_unrecognized_bucket(monkeypatch):
+    """A malformed/unexpected bucket value from the VLM must degrade gracefully,
+    not raise or silently misroute."""
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "classify_side_image_type",
+                        lambda image, backend, model=None: {"checked": True, "bucket": "not-a-real-bucket"})
+
+    result = check_side_identity("does-not-matter.jpg", claimed_vrn="UP42T4069", claimed_make="TATA MOTORS LTD")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
 
 
 def _stub_corner_view_deps(monkeypatch, similarity: float, color_similarity: float = 1.0):
@@ -244,9 +272,8 @@ def test_check_side_identity_routes_corner_view_without_claimed_make_dependency(
     make classifier really is out of this bucket's path entirely."""
     import vfiv.side_image.side_image_check as side_module
 
-    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
-    monkeypatch.setattr(side_module, "get_side_image_type_classifier",
-                        lambda: type("_C", (), {"predict": lambda self, arr: {"bucket": "corner_view"}})())
+    monkeypatch.setattr(side_module, "classify_side_image_type",
+                        lambda image, backend, model=None: {"checked": True, "bucket": "corner_view"})
 
     seen = {}
 
