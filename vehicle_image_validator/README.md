@@ -211,6 +211,10 @@ python3 -m venv .venv && source .venv/bin/activate   # needs Python <3.13 (torch
 pip install -r requirements.txt && pip install -e .
 pip install -e ~/truck_extract_match                 # local sibling repo, not on PyPI
 
+# FASTag checks also need the zbar shared library at the OS level (not a pip
+# package) -- `apt-get install libzbar0` (Debian/Ubuntu) or `brew install zbar`
+# (macOS); see "FASTag check" below for the Apple Silicon caveat.
+
 export ANTHROPIC_API_KEY=...      # Q1 screenshot/AI-gen judgment + Q3 model reading
 export AWS_ACCESS_KEY_ID=...      # Q2 VRN (Rekognition) + Q3's Rekognition make backstop
 export AWS_SECRET_ACCESS_KEY=...  # (already set in this environment)
@@ -492,8 +496,20 @@ python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-0
 python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936 --backend gemini
 ```
 
-Needs the system `libzbar0` library for `pyzbar` (`apt-get install libzbar0`), on
-top of whichever OCR backend's credentials you're using (AWS by default).
+Needs the system zbar shared library for `pyzbar` — a real OS-level dependency,
+not just a pip package: `apt-get install libzbar0` (Debian/Ubuntu) or `brew install
+zbar` (macOS) — on top of whichever OCR backend's credentials you're using (AWS by
+default). Missing it surfaces as `"Unable to find zbar shared library"` (confirmed
+during manual testing) — a real barcode/QR-decode failure, not a bug in this
+codebase. On Apple Silicon Macs, Homebrew installs to `/opt/homebrew` rather than
+`/usr/local`, and `pyzbar` doesn't always find it there automatically; if
+`brew install zbar` alone doesn't fix it, also run:
+```bash
+export DYLD_LIBRARY_PATH="/opt/homebrew/lib:$DYLD_LIBRARY_PATH"
+```
+before launching (Intel Macs: `/usr/local/lib` instead). Either way, restart
+whatever's running `vfiv` afterward — the library loads at process start, so an
+already-running webapp/CLI won't pick up a newly-installed library.
 
 ## Side/axle-image check (not wired into `validate_upload`)
 
