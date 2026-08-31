@@ -1,7 +1,7 @@
 import pytest
 
 from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payload, read_fastag
-from vfiv.fastag_image.fastag_check import decide_fastag
+from vfiv.fastag_image.fastag_check import check_fastag_upload, decide_fastag
 
 
 def _read(codes=None, printed_id=None) -> dict:
@@ -83,3 +83,49 @@ def test_unknown_ocr_backend_raises_before_any_image_io():
     the image -- so this raises ValueError even for a path that doesn't exist."""
     with pytest.raises(ValueError, match="unknown FASTag OCR backend"):
         read_fastag("does-not-exist.jpg", backend="not-a-real-backend")
+
+
+def test_check_fastag_upload_skips_duplicate_check_without_vrn_and_upload_id(monkeypatch):
+    """Without BOTH claimed_vrn and upload_id, check_fastag_upload must not touch
+    the duplicate-detection corpus -- it's opt-in, same as Q1/side's own checks."""
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_upload", lambda image, backend, vlm_model=None: _read(
+        codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")],
+        printed_id="607469-009-0874936"))
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("check_duplicate should not be called without claimed_vrn + upload_id")
+
+    monkeypatch.setattr(fastag_module, "check_duplicate", _fail_if_called)
+
+    result = check_fastag_upload("does-not-matter.jpg", claimed_fastag_id="607469-009-0874936")
+    assert result.decision == "PASS"
+    assert result.duplicate_is_suspect is None
+
+
+def test_check_fastag_upload_folds_in_duplicate_suspect_when_vrn_and_upload_id_given(monkeypatch):
+    """With both claimed_vrn and upload_id given, a duplicate-check MANUAL_REVIEW
+    verdict must escalate the fastag decision and surface duplicate_is_suspect."""
+    import vfiv.fastag_image.fastag_check as fastag_module
+    from vfiv.schemas import DuplicateCheckResult
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_upload", lambda image, backend, vlm_model=None: _read(
+        codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")],
+        printed_id="607469-009-0874936"))
+
+    def _fake_check_duplicate(image, upload_id, claimed_vrn, image_type="front"):
+        assert image_type == "fastag"
+        return DuplicateCheckResult(
+            decision="MANUAL_REVIEW", reason="near-duplicate of img_1", checked=True,
+            claimed_vrn=claimed_vrn, is_duplicate_suspect=True, best_match_id="img_1",
+            best_match_similarity=0.99, best_match_vrn="MH12AB1234",
+        )
+
+    monkeypatch.setattr(fastag_module, "check_duplicate", _fake_check_duplicate)
+
+    result = check_fastag_upload("does-not-matter.jpg", claimed_fastag_id="607469-009-0874936",
+                                 claimed_vrn="UP42T4069", upload_id="img_x")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.duplicate_is_suspect is True
+    assert "duplicate: near-duplicate of img_1" in result.reason

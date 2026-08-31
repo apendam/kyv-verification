@@ -65,6 +65,20 @@ class MakeModelCheckResult(BaseModel):
     error: Optional[str] = None
 
 
+class ReferenceStoreResult(BaseModel):
+    """Vectorize-and-store ONLY — no duplicate search, no PASS/REJECT/MANUAL_REVIEW
+    decision. For seeding the reference corpus (e.g. a one-time import of a legacy,
+    pre-vector-DB photo dump) via the webapp's Reference Images tab. The actual
+    duplicate CHECK happens later, when a new front/side/FASTag upload is tested —
+    see ``DuplicateCheckResult``/``check_duplicate``."""
+    stored: bool
+    upload_id: str
+    claimed_vrn: str
+    image_type: str
+    reason: str
+    error: Optional[str] = None
+
+
 class DuplicateCheckResult(BaseModel):
     """Cross-upload near-duplicate check — NOT one of Q1/Q2/Q3, and not folded into
     ``CombinedResult``'s decision. Flags a MANUAL_REVIEW lead when this image is a
@@ -97,6 +111,7 @@ class FastagCheckResult(BaseModel):
     decoded_sources: Optional[dict[str, str]] = None  # e.g. {"qr": "...", "barcode:code128": "..."}
     extracted_printed_id: Optional[str] = None
     matched_via: Optional[str] = None  # "qr" | "barcode:<symbology>" | "ocr" | None
+    duplicate_is_suspect: Optional[bool] = None
     error: Optional[str] = None
 
 

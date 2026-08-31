@@ -31,7 +31,7 @@ from vfiv.backends.vector_store import (
     find_similar,
     store_embedding,
 )
-from vfiv.schemas import DuplicateCheckResult
+from vfiv.schemas import DuplicateCheckResult, ReferenceStoreResult
 
 
 def decide_duplicate(
@@ -113,3 +113,28 @@ def check_duplicate(
     if store:
         store_embedding(upload_id, claimed_vrn, image_type, embedding)
     return result
+
+
+def store_reference_image(
+    image,
+    upload_id: str,
+    claimed_vrn: str,
+    image_type: str = "front",
+) -> ReferenceStoreResult:
+    """Vectorize and store ONLY — no duplicate search, no decision. For seeding the
+    reference corpus (e.g. importing a legacy dump of photos that predates this
+    vector-DB setup) via the webapp's Reference Images tab. The check against this
+    corpus happens later, when a real front/side/FASTag upload runs its own check
+    (see ``check_duplicate``) — not here."""
+    try:
+        embedding = get_siglip_model().embed_image(image)
+        store_embedding(upload_id, claimed_vrn, image_type, embedding)
+    except (DuplicateStoreError, ImportError) as e:
+        return ReferenceStoreResult(
+            stored=False, upload_id=upload_id, claimed_vrn=claimed_vrn, image_type=image_type,
+            reason=f"store unavailable ({e})", error=str(e),
+        )
+    return ReferenceStoreResult(
+        stored=True, upload_id=upload_id, claimed_vrn=claimed_vrn, image_type=image_type,
+        reason="stored",
+    )

@@ -19,7 +19,7 @@ matching code is installed as an actual dependency — see Run below).
 | **Q3 — Make + model** | SigLIP 2 + Rekognition (make, two independent votes) + Claude (model) | ✅ |
 | **Side/Axle image** | Claude/Gemini (axle count) + SigLIP (identity binding) + pgvector (duplicate check) | ✅ |
 | **FASTag image** | pyzbar (QR/barcode decode) + Rekognition/Claude/Gemini (printed-digit OCR) | ✅ |
-| **Test/inference interface** | Gradio UI — individual + bulk, backend-selectable per stage | ✅ |
+| **Test/inference interface** | Gradio UI — one upload at a time, backend-selectable per stage | ✅ |
 
 ## Origin — where each model came from
 
@@ -150,29 +150,33 @@ regardless of what you pick here.
 python -m vfiv.webapp   # → http://127.0.0.1:7860
 ```
 
-- **Individual test** — upload one image, enter truck number / make / model (optional),
-  pick a backend per stage, run.
-- **Bulk test** — upload a CSV (`image_url, truck_number, make, model`), same backend
-  pickers, runs every row and gives a results table + downloadable CSV.
+- **Individual test only** — upload one image, enter truck number / make / model
+  (optional), pick a backend per stage, run. No bulk/CSV mode anywhere in this
+  interface — one upload at a time, matching how it's actually used.
 - **Top-level layout** — grouped by which physical photo the checks run against, not
   by check name, since that's the natural mental model for someone testing an upload
   ("does this front photo pass?" not "does Q1 pass?"):
   - **Front Image** — Q1 (front-image gate) / Q2 (VRN + colour) / Q3 (make + model) /
-    end-to-end, all sub-tabs testing the same uploaded front photo.
+    end-to-end, all sub-tabs testing the same uploaded front photo. Q1 and end-to-end
+    both take an optional VRN, which (if filled in) also checks this upload against the
+    `"front"` reference corpus.
   - **Side/Axle Image** — broken into check-based buckets: **Axle count** (isolated
     `check_axle_count`), **Identity binding** (isolated `check_side_identity`, routed
-    into vrn_visible/corner_view/pure_side_profile), **Duplicate check** (scoped to the
-    `"side"` corpus), and **End-to-end** (the combined `check_side_image_upload`, worst
-    of all three). The first three are independently unit-testable — see
-    `side_image/side_image_check.py`.
+    into vrn_visible/corner_view/pure_side_profile), **Duplicate check** (an explicit,
+    standalone check against the `"side"` corpus), and **End-to-end** (the combined
+    `check_side_image_upload`, worst of axle/identity/duplicate). The first three are
+    independently unit-testable — see `side_image/side_image_check.py`.
   - **FASTag** — **QR / Barcode read** and **Printed digits (OCR)** show the raw
     decode/read only, with no pass/fail of their own: the actual fraud-check
     (`decide_fastag`) needs all three sources together to judge cross-source
     consistency, so an isolated bucket that fabricated a partial verdict would be
     misleading. **End-to-end** (`check_fastag_upload`) is the only sub-tab that
-    actually decides PASS/REJECT/MANUAL_REVIEW.
-  - **Reference Images** — stays a separate top-level tab (see "Duplicate detection"
-    below) since it manages the corpus itself, not a check against one upload.
+    actually decides PASS/REJECT/MANUAL_REVIEW, and (like Q1) takes an optional VRN to
+    also check against the `"fastag"` reference corpus.
+  - **Reference Images** — a separate top-level tab for *seeding* the corpus (see
+    "Duplicate detection" below) — it stores an embedding, full stop. It never runs a
+    duplicate search or produces a decision; the actual check happens later, when a
+    real front/side/FASTag upload is tested through the tabs above.
 - **Backend choices per stage** (`experiments/q1_select.py` / `q2_select.py` / `q3_select.py`):
   - **Q1**: `real_cv` (production default) | `claude` (the original all-Claude Q1,
     reconstructed) | `gemini`
@@ -378,12 +382,21 @@ test/webapp layer (rather than inside `front_image/front_image.py`'s
 production `validate_front_image`) so it works with whichever Q1 backend
 you're comparing (`real_cv` | `claude` | `gemini`).
 
+**FASTag (end-to-end)** — `check_fastag_upload()` takes the same optional
+`claimed_vrn` + `upload_id` pair, folding in `check_duplicate(...,
+image_type="fastag")` the same way Q1 does. The isolated QR/Barcode and OCR
+buckets don't take a VRN — they never produce a decision at all (see above),
+so there's nothing to fold a duplicate verdict into.
+
 **Seeding the reference library** — the webapp's **Reference Images** tab
-(`python -m vfiv.webapp`) lets you upload known-good truck images by type (front/side/
-fastag), store their embeddings, and check new images against what's stored — without
-running Q1/Q2/Q3 at all. A "Refresh library stats" button shows how many images are
-stored per type. Bulk CSV seeding is also supported (`image_url, truck_number,
-upload_id` columns).
+(`python -m vfiv.webapp`) is for *seeding only*: upload an image + VRN + type
+(front/side/fastag) and it vectorizes and stores the embedding via
+`store_reference_image()` — no duplicate search, no PASS/REJECT/MANUAL_REVIEW
+decision. This is the path for importing a legacy dump of photos that
+predates this vector-DB setup. The actual duplicate *check* against whatever
+is stored happens later, when a real upload is tested — through Q1/FASTag's
+optional VRN field, or the Side/Axle **Duplicate check** bucket. A "Refresh
+library stats" button shows how many images are stored per type.
 
 **Running pgvector locally** (e.g. on your own machine, via Homebrew on macOS):
 

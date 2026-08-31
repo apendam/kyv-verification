@@ -22,6 +22,7 @@ from truck_extract_match.plate.format import confusable_distance
 
 from vfiv import config
 from vfiv.backends.fastag_reader import FastagReadError, parse_qr_payload, read_fastag
+from vfiv.duplicate_check import check_duplicate
 from vfiv.schemas import FastagCheckResult
 
 
@@ -141,6 +142,9 @@ def decide_fastag(
     )
 
 
+_SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
+
+
 def check_fastag_upload(
     image,
     claimed_fastag_id: str,
@@ -148,11 +152,18 @@ def check_fastag_upload(
     max_ocr_edits: int = config.FASTAG_OCR_MAX_CONFUSABLE_EDITS,
     backend: str = config.FASTAG_OCR_BACKEND,
     vlm_model: str | None = None,
+    claimed_vrn: str | None = None,
+    upload_id: str | None = None,
 ) -> FastagCheckResult:
     """Read then decide (single-call path). See ``decide_fastag`` for the decision
     logic and ``classify_fastag_upload`` for the raw reads. ``backend`` — "rekognition"
     (default) | "claude" | "gemini" — selects the printed-digit OCR source only; the
-    barcode/QR decode always runs the same way regardless."""
+    barcode/QR decode always runs the same way regardless.
+
+    Pass BOTH ``claimed_vrn`` and ``upload_id`` to also run the cross-upload
+    duplicate check (``duplicate_check.py``, ``image_type="fastag"``) and fold its
+    verdict into the decision — same opt-in pattern as Q1/side's own duplicate
+    checks. Leaving either blank skips it."""
     r = classify_fastag_upload(image, backend=backend, vlm_model=vlm_model)
     if not r.get("checked"):
         return FastagCheckResult(
@@ -163,4 +174,14 @@ def check_fastag_upload(
             reason=f"fastag check unavailable ({r.get('error', '?')})",
             error=r.get("error"),
         )
-    return decide_fastag(r, claimed_fastag_id, claimed_bank_code, max_ocr_edits)
+    result = decide_fastag(r, claimed_fastag_id, claimed_bank_code, max_ocr_edits)
+
+    if not (claimed_vrn and upload_id):
+        return result
+
+    dup = check_duplicate(image, upload_id, claimed_vrn, image_type="fastag")
+    return result.model_copy(update={
+        "decision": max([result.decision, dup.decision], key=_SEVERITY.get),
+        "reason": f"{result.reason}; duplicate: {dup.reason}",
+        "duplicate_is_suspect": dup.is_duplicate_suspect,
+    })

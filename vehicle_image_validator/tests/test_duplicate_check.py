@@ -3,7 +3,7 @@ import os
 import pytest
 
 from vfiv.backends.vector_store import DuplicateMatch
-from vfiv.duplicate_check import check_duplicate, decide_duplicate
+from vfiv.duplicate_check import check_duplicate, decide_duplicate, store_reference_image
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 HAS_PGVECTOR = bool(os.environ.get("VFIV_PGVECTOR_DSN"))
@@ -136,6 +136,55 @@ def test_image_type_defaults_to_front_and_is_passed_through(monkeypatch):
                     image_type="fastag")
     assert seen["find_image_type"] == "fastag"
     assert seen["store_image_type"] == "fastag"
+
+
+def test_store_reference_image_stores_without_searching(monkeypatch):
+    """store_reference_image is the Reference Images tab's seeding path -- it must
+    embed and store, but never call find_similar/decide_duplicate. No PASS/REJECT/
+    MANUAL_REVIEW decision -- just whether the store succeeded."""
+    import vfiv.duplicate_check as duplicate_check_module
+
+    class _FakeSiglip:
+        def embed_image(self, image):
+            return "fake-embedding"
+
+    stored = {}
+
+    def _fake_store_embedding(upload_id, claimed_vrn, image_type, embedding):
+        stored["upload_id"] = upload_id
+        stored["claimed_vrn"] = claimed_vrn
+        stored["image_type"] = image_type
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("store_reference_image must not search for duplicates")
+
+    monkeypatch.setattr(duplicate_check_module, "get_siglip_model", lambda: _FakeSiglip())
+    monkeypatch.setattr(duplicate_check_module, "store_embedding", _fake_store_embedding)
+    monkeypatch.setattr(duplicate_check_module, "find_similar", _fail_if_called)
+
+    result = store_reference_image("does-not-matter.jpg", upload_id="legacy_1",
+                                   claimed_vrn="UP42T4069", image_type="side")
+    assert result.stored is True
+    assert stored == {"upload_id": "legacy_1", "claimed_vrn": "UP42T4069", "image_type": "side"}
+
+
+def test_store_reference_image_degrades_when_pgvector_not_configured(monkeypatch):
+    import vfiv.duplicate_check as duplicate_check_module
+    from vfiv.backends.vector_store import DuplicateStoreError
+
+    class _FakeSiglip:
+        def embed_image(self, image):
+            return "fake-embedding"
+
+    def _fake_store_embedding(upload_id, claimed_vrn, image_type, embedding):
+        raise DuplicateStoreError("pgvector not configured")
+
+    monkeypatch.setattr(duplicate_check_module, "get_siglip_model", lambda: _FakeSiglip())
+    monkeypatch.setattr(duplicate_check_module, "store_embedding", _fake_store_embedding)
+
+    result = store_reference_image("does-not-matter.jpg", upload_id="legacy_1", claimed_vrn="UP42T4069")
+    assert result.stored is False
+    assert "pgvector not configured" in result.reason
 
 
 @requires_pgvector
