@@ -455,9 +455,14 @@ for the first time.
 the FASTag sticker itself — three independent, real reads of the tag's identity,
 cross-checked against each other as well as against the claimed value:
 
-- **QR code** (`backends/fastag_reader.py`, via `pyzbar`) — decodes the UPI-recharge
-  payload (`<fastag_id>@<bank_code>`) directly. Most damage-tolerant of the three
-  (built-in error correction).
+- **QR code** (`backends/fastag_reader.py`, via `pyzbar`) — decodes directly. Most
+  damage-tolerant of the three (built-in error correction). Encodes a full UPI deep
+  link (`upi://pay?ver=...&pa=netc.<fastag_id>@<bank_code>&...`), NOT a bare
+  `<fastag_id>@<bank_code>` string (confirmed against a real decoded FASTag QR
+  during manual testing) — `parse_qr_payload()` extracts the tag id/bank code from
+  the `pa` (payee address) query parameter, stripping its `netc.` prefix. Falls
+  back to treating the whole string as a bare `<fastag_id>@<bank_code>` value if
+  it isn't a `upi://` URI, for a simplified/non-standard QR encoding.
 - **1D barcode** — decoded directly, checksum-backed.
 - **Printed digits** below the barcode — read via OCR, the only genuinely fuzzy
   source of the three (confusable-character tolerance reused from

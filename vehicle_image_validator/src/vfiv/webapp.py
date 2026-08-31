@@ -731,9 +731,10 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                     gr.Markdown(
                         "Always shows the raw QR/barcode decode. Fill in a claimed **Tag "
                         "ID** to also get a pass/fail verdict on the QR code alone (exact "
-                        "match, parsed from the QR's `<TagID>@<bank_code>` payload) — this "
-                        "is narrower than the End-to-end tab's full cross-source check, "
-                        "which also verifies the barcode/OCR agree with each other."
+                        "match, parsed from the QR's UPI deep link — "
+                        "`upi://pay?...&pa=netc.<TagID>@<bank_code>&...`) — this is "
+                        "narrower than the End-to-end tab's full cross-source check, which "
+                        "also verifies the barcode/OCR agree with each other."
                     )
                     with gr.Row():
                         with gr.Column():

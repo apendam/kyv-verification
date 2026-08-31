@@ -2,8 +2,10 @@
 
 Three independent representations of the tag's identity are cross-checked, both
 against EACH OTHER and against the claimed value:
-  - the QR code (``<fastag_id>@<bank_code>``) — decoded directly, most damage-
-    tolerant of the three (built-in error correction)
+  - the QR code — decoded directly, most damage-tolerant of the three (built-in
+    error correction). Encodes a UPI deep link, not a bare
+    ``<fastag_id>@<bank_code>`` string — see ``backends/fastag_reader.py``'s
+    ``parse_qr_payload`` for the real format.
   - the 1D barcode — decoded directly, checksum-backed
   - the printed human-readable digits — read via OCR, the only fuzzy/error-prone
     source of the three

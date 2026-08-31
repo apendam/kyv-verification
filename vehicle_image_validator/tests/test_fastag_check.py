@@ -17,6 +17,8 @@ def _read(codes=None, printed_id=None) -> dict:
 
 
 def test_parse_qr_payload_splits_id_and_bank():
+    """The bare '<id>@<bank>' shape -- a fallback for a non-UPI-URI QR encoding,
+    not the real format (see the upi:// tests below), but still supported."""
     fastag_id, bank_code = parse_qr_payload("34161234567890123@icici")
     assert fastag_id == "34161234567890123"
     assert bank_code == "icici"
@@ -25,6 +27,29 @@ def test_parse_qr_payload_splits_id_and_bank():
 def test_parse_qr_payload_rejects_unexpected_shape():
     assert parse_qr_payload("not-a-vpa-string") == (None, None)
     assert parse_qr_payload("a@b@c") == (None, None)
+
+
+def test_parse_qr_payload_real_upi_uri_format():
+    """The actual format a FASTag recharge QR encodes -- a UPI deep link, with
+    the tag id/bank code inside the 'pa' param, prefixed with 'netc.' (confirmed
+    against a real decoded FASTag QR)."""
+    data = ("upi://pay?ver=01&mode=01&pa=netc.607469009874936@icici&purpose=00"
+           "&mc=1234&pn=NETC%20FASTag%20Recharge&orgid=123456&qrMedium=04")
+    fastag_id, bank_code = parse_qr_payload(data)
+    assert fastag_id == "607469009874936"
+    assert bank_code == "icici"
+
+
+def test_parse_qr_payload_upi_uri_without_pa_param_is_unreadable():
+    assert parse_qr_payload("upi://pay?ver=01&mode=01&purpose=00") == (None, None)
+
+
+def test_parse_qr_payload_upi_uri_missing_netc_prefix_still_splits():
+    """Robustness -- if some issuer's QR omits the 'netc.' prefix on 'pa', the id
+    itself should still come through untouched rather than failing outright."""
+    fastag_id, bank_code = parse_qr_payload("upi://pay?pa=607469009874936@icici")
+    assert fastag_id == "607469009874936"
+    assert bank_code == "icici"
 
 
 def test_barcode_matches_claimed_id_passes():

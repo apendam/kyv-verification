@@ -3,9 +3,12 @@ the printed human-readable serial via a selectable OCR backend.
 
 Three independent representations of the tag's identity live on the sticker:
   - the 1D barcode (Code128-style) — decoded directly, checksum-backed
-  - the QR code (``<fastag_id>@<bank_code>``, the UPI-recharge payload) — decoded
-    directly, with built-in error correction that tolerates glare/damage better
-    than the 1D barcode
+  - the QR code — decoded directly, with built-in error correction that tolerates
+    glare/damage better than the 1D barcode. Encodes a full UPI deep link
+    (``upi://pay?ver=...&pa=netc.<fastag_id>@<bank_code>&...``), NOT a bare
+    ``<fastag_id>@<bank_code>`` string (confirmed against a real decoded FASTag QR
+    during manual testing) — the tag id/bank code live inside the ``pa`` (payee
+    address) query parameter, prefixed with ``netc.``. See ``parse_qr_payload``.
   - the human-readable digits printed below the barcode — read via OCR, the only
     genuinely fuzzy/error-prone source of the three
 
@@ -28,6 +31,7 @@ import io
 import re
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 import boto3
 from PIL import Image
@@ -84,13 +88,31 @@ def decode_codes(image) -> list[DecodedCode]:
 
 
 def parse_qr_payload(data: str) -> tuple[Optional[str], Optional[str]]:
-    """``<fastag_id>@<bank_code>`` (the UPI-recharge payload format) -> (fastag_id,
-    bank_code). Returns (None, None) if the payload isn't shaped like that — e.g. a
-    QR code that turned out to be something unrelated."""
-    if data.count("@") != 1:
+    """FASTag recharge QR codes encode a UPI deep link:
+    ``upi://pay?ver=...&mode=...&pa=netc.<fastag_id>@<bank_code>&purpose=...&mc=...
+    &pn=NETC%20FASTag%20Recharge&orgid=...&qrMedium=...`` — the ``pa`` (payee
+    address) query parameter is where the tag id/bank code actually live, prefixed
+    with ``netc.`` (confirmed against a real decoded FASTag QR during manual
+    testing). Extracts that, strips the ``netc.`` prefix, and splits on ``@`` ->
+    (fastag_id, bank_code).
+
+    Falls back to treating the WHOLE string as a bare ``<fastag_id>@<bank_code>``
+    VPA-shaped value if it isn't a ``upi://`` URI (or has no ``pa`` param) — e.g.
+    a simplified/non-standard QR encoding. Returns (None, None) if neither shape
+    matches — e.g. a QR code that turned out to be something unrelated."""
+    vpa = data
+    parsed = urlparse(data)
+    if parsed.scheme == "upi":
+        pa_values = parse_qs(parsed.query).get("pa")
+        if pa_values:
+            vpa = pa_values[0]
+
+    if vpa.count("@") != 1:
         return None, None
-    fastag_id, bank_code = data.split("@", 1)
+    fastag_id, bank_code = vpa.split("@", 1)
     fastag_id, bank_code = fastag_id.strip(), bank_code.strip()
+    if fastag_id.lower().startswith("netc."):
+        fastag_id = fastag_id[len("netc."):]
     if not fastag_id or not bank_code:
         return None, None
     return fastag_id, bank_code
