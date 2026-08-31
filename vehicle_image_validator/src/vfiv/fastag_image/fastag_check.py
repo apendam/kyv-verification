@@ -184,4 +184,5 @@ def check_fastag_upload(
         "decision": max([result.decision, dup.decision], key=_SEVERITY.get),
         "reason": f"{result.reason}; duplicate: {dup.reason}",
         "duplicate_is_suspect": dup.is_duplicate_suspect,
+        "duplicate_matches": dup.duplicate_matches,
     })

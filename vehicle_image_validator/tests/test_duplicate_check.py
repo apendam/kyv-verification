@@ -67,6 +67,26 @@ def test_picks_the_highest_similarity_suspect_among_several():
     assert result.best_match_similarity == 0.995
 
 
+def test_duplicate_matches_lists_every_suspect_not_just_the_best_one():
+    """A manual reviewer needs every candidate on file, highest-similarity first --
+    not just the single best_match_* fields -- to go pull up and compare each
+    one against the upload in question."""
+    matches = [
+        _match("img_low", "MH12AB1234", 0.98),
+        _match("img_high", "DL01ZZ9999", 0.995),
+        _match("img_same_vrn", "UP42T4069", 0.999),  # same VRN -- never a suspect
+    ]
+    result = decide_duplicate(matches, claimed_vrn="UP42T4069", similarity_min=0.97)
+    assert [m.upload_id for m in result.duplicate_matches] == ["img_high", "img_low"]
+    assert result.duplicate_matches[0].similarity == 0.995
+    assert result.duplicate_matches[0].claimed_vrn == "DL01ZZ9999"
+
+
+def test_duplicate_matches_empty_when_nothing_flagged():
+    result = decide_duplicate([_match("img_1", "UP42T4069", 0.999)], claimed_vrn="UP42T4069")
+    assert result.duplicate_matches == []
+
+
 def test_manual_review_when_pgvector_not_configured(monkeypatch):
     """Backend not configured (no VFIV_PGVECTOR_DSN) -> checked=False, surfaced as
     MANUAL_REVIEW rather than crashing -- same posture as the AWS-credential-error

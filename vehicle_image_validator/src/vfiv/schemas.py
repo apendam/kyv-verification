@@ -5,6 +5,14 @@ from pydantic import BaseModel
 Decision = Literal["PASS", "REJECT", "MANUAL_REVIEW"]
 
 
+class DuplicateMatchInfo(BaseModel):
+    """One prior upload this image looks like a near-duplicate of — enough for a
+    manual reviewer to go pull that upload_id up and eyeball the two side by side."""
+    upload_id: str
+    claimed_vrn: str
+    similarity: float  # cosine similarity, 0..1
+
+
 class FrontImageResult(BaseModel):
     decision: Decision
     reason: str
@@ -19,6 +27,7 @@ class FrontImageResult(BaseModel):
     ai_confidence: Optional[float] = None
     confidence: Optional[float] = None
     duplicate_is_suspect: Optional[bool] = None
+    duplicate_matches: list[DuplicateMatchInfo] = []
     error: Optional[str] = None
 
 
@@ -94,6 +103,7 @@ class DuplicateCheckResult(BaseModel):
     best_match_id: Optional[str] = None
     best_match_similarity: Optional[float] = None  # cosine similarity, 0..1
     best_match_vrn: Optional[str] = None
+    duplicate_matches: list[DuplicateMatchInfo] = []  # ALL suspects, not just the best one
     error: Optional[str] = None
 
 
@@ -112,6 +122,7 @@ class FastagCheckResult(BaseModel):
     extracted_printed_id: Optional[str] = None
     matched_via: Optional[str] = None  # "qr" | "barcode:<symbology>" | "ocr" | None
     duplicate_is_suspect: Optional[bool] = None
+    duplicate_matches: list[DuplicateMatchInfo] = []
     error: Optional[str] = None
 
 
@@ -169,6 +180,7 @@ class SideImageCheckResult(BaseModel):
     identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
     identity_decision: Optional[str] = None
     duplicate_is_suspect: Optional[bool] = None
+    duplicate_matches: list[DuplicateMatchInfo] = []
     error: Optional[str] = None
 
 

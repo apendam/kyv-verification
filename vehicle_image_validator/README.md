@@ -358,7 +358,21 @@ python -m vfiv.cli --image samples/truck2.jpg --type duplicate --vrn UP42T4069 \
 from vfiv import check_duplicate
 result = check_duplicate(image, upload_id="upload_123", claimed_vrn="UP42T4069", image_type="front")
 result.is_duplicate_suspect, result.best_match_id, result.best_match_similarity, result.best_match_vrn
+result.duplicate_matches  # every suspect on file, not just the closest one -- see below
 ```
+
+**`duplicate_matches`** — a `DuplicateMatchInfo` list (`upload_id` / `claimed_vrn` /
+`similarity`, highest similarity first) of **every** prior upload that cleared
+`DUPLICATE_SIMILARITY_MIN` under a different VRN, not just the single closest one
+(`best_match_id` etc. still exist too, mirroring `duplicate_matches[0]`, kept for
+anyone already reading those fields). This is what a manual reviewer actually needs —
+several near-identical prior uploads on file is stronger tampering evidence than one,
+and each `upload_id` is what they'd go pull up to eyeball side by side. Folded straight
+into the result wherever the duplicate check itself gets folded in — Q1
+(`FrontImageResult.duplicate_matches`), FASTag (`FastagCheckResult.duplicate_matches`),
+and Side/Axle (`SideImageCheckResult.duplicate_matches`) — so it shows up automatically
+in the webapp's JSON output alongside the plain-English `reason`, no separate lookup
+needed.
 
 **What `upload_id` is for**: never parsed or interpreted — it's a stable
 identifier for the row being stored (in production, the real upload/

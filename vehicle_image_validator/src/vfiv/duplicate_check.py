@@ -31,7 +31,7 @@ from vfiv.backends.vector_store import (
     find_similar,
     store_embedding,
 )
-from vfiv.schemas import DuplicateCheckResult, ReferenceStoreResult
+from vfiv.schemas import DuplicateCheckResult, DuplicateMatchInfo, ReferenceStoreResult
 
 
 def decide_duplicate(
@@ -47,8 +47,11 @@ def decide_duplicate(
     the SAME VRN is just an honest re-submission and is never flagged.
     """
     claimed_norm = normalize_vrn(claimed_vrn)
-    suspects = [m for m in matches
-                if m.similarity >= similarity_min and normalize_vrn(m.claimed_vrn) != claimed_norm]
+    suspects = sorted(
+        (m for m in matches
+         if m.similarity >= similarity_min and normalize_vrn(m.claimed_vrn) != claimed_norm),
+        key=lambda m: m.similarity, reverse=True,
+    )
 
     if not suspects:
         best = matches[0] if matches else None
@@ -64,7 +67,12 @@ def decide_duplicate(
                     if best else "no prior uploads on file"),
         )
 
-    top = max(suspects, key=lambda m: m.similarity)
+    top = suspects[0]
+    duplicate_matches = [
+        DuplicateMatchInfo(upload_id=m.upload_id, claimed_vrn=m.claimed_vrn, similarity=m.similarity)
+        for m in suspects
+    ]
+    extra = f"; {len(suspects) - 1} more similar upload(s) also on file" if len(suspects) > 1 else ""
     return DuplicateCheckResult(
         decision="MANUAL_REVIEW",
         checked=True,
@@ -73,9 +81,10 @@ def decide_duplicate(
         best_match_id=top.upload_id,
         best_match_similarity=top.similarity,
         best_match_vrn=top.claimed_vrn,
+        duplicate_matches=duplicate_matches,
         reason=(f"near-duplicate (similarity={top.similarity:.4f}) of upload "
                 f"{top.upload_id!r}, filed there under a different VRN "
-                f"({top.claimed_vrn!r}) — possible reused/tampered photo"),
+                f"({top.claimed_vrn!r}) — possible reused/tampered photo{extra}"),
     )
 
 

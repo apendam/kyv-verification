@@ -317,4 +317,5 @@ def check_side_image_upload(
         identity_bucket=identity.identity_bucket,
         identity_decision=identity.decision,
         duplicate_is_suspect=dup.is_duplicate_suspect if dup is not None else None,
+        duplicate_matches=dup.duplicate_matches if dup is not None else [],
     )

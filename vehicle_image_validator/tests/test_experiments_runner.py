@@ -112,6 +112,31 @@ def test_q1_only_folds_in_duplicate_suspect_when_vrn_and_upload_id_given(monkeyp
     assert "duplicate: near-duplicate of img_1" in result.reason
 
 
+def test_q1_only_surfaces_duplicate_matches_list_for_manual_review(monkeypatch):
+    """The list of every suspect upload_id (not just the single best match) must
+    reach the caller, so a manual reviewer can pull each one up and compare."""
+    import vfiv.experiments.runner as runner_module
+    from vfiv.schemas import DuplicateCheckResult, DuplicateMatchInfo
+
+    monkeypatch.setattr(runner_module.q1_select, "classify_q1", lambda image, backend, gemini_model=None: _passing_q1_raw())
+
+    def _fake_check_duplicate(image, upload_id, claimed_vrn, image_type="front"):
+        return DuplicateCheckResult(
+            decision="MANUAL_REVIEW", reason="near-duplicate of img_1", checked=True,
+            claimed_vrn=claimed_vrn, is_duplicate_suspect=True, best_match_id="img_1",
+            best_match_similarity=0.99, best_match_vrn="MH12AB1234",
+            duplicate_matches=[
+                DuplicateMatchInfo(upload_id="img_1", claimed_vrn="MH12AB1234", similarity=0.99),
+                DuplicateMatchInfo(upload_id="img_2", claimed_vrn="DL01ZZ9999", similarity=0.975),
+            ],
+        )
+
+    monkeypatch.setattr(runner_module, "check_duplicate", _fake_check_duplicate)
+
+    result = run_q1_only("does-not-matter.jpg", claimed_vrn="UP42T4069", upload_id="img_x")
+    assert [m.upload_id for m in result.duplicate_matches] == ["img_1", "img_2"]
+
+
 def test_run_test_case_skips_duplicate_check_without_upload_id(monkeypatch):
     """run_test_case's claimed_vrn is always present (Q2 needs it regardless), so
     the duplicate check must be gated on upload_id alone -- omitting it must not
