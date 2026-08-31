@@ -100,14 +100,26 @@ class SideImageTypeClassifier:
     plate, BOTH the front and side of the truck (a corner/three-quarter shot), or
     only a pure side profile? ``side_image/side_image_check.py`` routes to a
     different identity-binding strategy per bucket, in decreasing order of
-    reliability — see that module's docstring."""
+    reliability — see that module's docstring.
+
+    ``corner_view`` vs. ``pure_side_profile`` is anchored on windshield visibility
+    (confirmed against a real misclassified upload during manual testing): a true
+    side profile is shot perpendicular to the truck's length, so the windshield
+    (which faces forward) is edge-on or invisible; any shot where the windshield
+    is actually visible implies a forward-facing viewing-angle component, which by
+    definition makes it a corner/three-quarter shot, not a pure side profile —
+    a much sharper, more concrete visual cue for a zero-shot embedding comparison
+    than a vague "shows both front and side" description."""
     LABELS = {
         "vrn_visible": ("the side of a truck with a visible license plate "
                          "showing the registration number"),
-        "corner_view": ("a three-quarter corner view of a truck showing both its "
-                         "front grille/headlights and its side wheels"),
-        "pure_side_profile": ("a straight-on side profile view of a truck showing "
-                               "only its side body and wheels, no front or plate visible"),
+        "corner_view": ("a three-quarter angled view of a truck where the "
+                         "windshield is visible alongside the front grille/"
+                         "headlights and the side of the truck body and wheels"),
+        "pure_side_profile": ("a straight-on side profile view of a truck shot "
+                               "perpendicular to its length, where the windshield "
+                               "is edge-on or not visible at all, and only the "
+                               "side body and wheels are shown"),
     }
 
     def __init__(self, siglip: SigLipModel):

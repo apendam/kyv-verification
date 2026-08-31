@@ -500,7 +500,15 @@ assumption.
 
 **Identity-to-claimed-vehicle** — does this side photo belong to the SAME truck as
 the claimed VRN/make? Routed by `SideImageTypeClassifier`
-(`backends/siglip.py`) into three buckets of **decreasing** reliability:
+(`backends/siglip.py`) into three buckets of **decreasing** reliability. The
+`corner_view` vs. `pure_side_profile` split is anchored on **windshield
+visibility**: a true side profile is shot perpendicular to the truck's length, so
+the (forward-facing) windshield is edge-on or invisible; any shot where the
+windshield is actually visible implies a forward-facing viewing angle, which by
+definition makes it a corner/three-quarter shot — a sharper, more concrete visual
+cue for this zero-shot embedding comparison than the original vague "shows both
+front and side" wording (confirmed against a real corner-view upload that kept
+misrouting to `pure_side_profile` during manual testing).
 
 | Bucket | Strategy | Reliability |
 |---|---|---|
