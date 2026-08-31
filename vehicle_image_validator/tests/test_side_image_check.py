@@ -112,9 +112,8 @@ def test_check_side_identity_routes_to_vrn_visible_bucket(monkeypatch):
 
 def _stub_corner_view_deps(monkeypatch, similarity: float, color_similarity: float = 1.0):
     """Wires just enough of corner_view's dependency chain (detector + embeddings +
-    colour histogram) to exercise _identity_via_corner_view for real, while
-    asserting the make classifier is never touched -- it's reserved for
-    pure_side_profile only now."""
+    colour histogram) to exercise _identity_via_corner_view for real -- no make
+    classifier stubbing needed any more since neither bucket imports it at all."""
     import vfiv.side_image.side_image_check as side_module
 
     monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
@@ -133,27 +132,20 @@ def _stub_corner_view_deps(monkeypatch, similarity: float, color_similarity: flo
     monkeypatch.setattr(side_module, "_cosine", lambda a, b: similarity)
     monkeypatch.setattr(side_module, "_color_histogram_similarity", lambda a, b: color_similarity)
 
-    def _fail_if_called(*args, **kwargs):
-        raise AssertionError("corner_view must never call the make classifier")
-
-    monkeypatch.setattr(side_module, "get_make_classifier", _fail_if_called)
-
 
 def test_corner_view_without_front_reference_is_unverifiable(monkeypatch):
     """No front_reference_image -- corner_view has nothing to compare against, so
-    it must be MANUAL_REVIEW (not a silent PASS, and not a fall back to the make
-    classifier, which is reserved for pure_side_profile only). Must bail out
-    before touching the image at all -- no load_rgb_array/detector stubbing
-    needed here, unlike the other corner_view tests."""
+    it must be MANUAL_REVIEW (not a silent PASS). Must bail out before touching
+    the image at all -- no load_rgb_array/detector stubbing needed here, unlike
+    the other corner_view tests."""
     import vfiv.side_image.side_image_check as side_module
 
     def _fail_if_called(*args, **kwargs):
-        raise AssertionError("corner_view must not touch the image or the make "
-                             "classifier when there's no front reference to compare against")
+        raise AssertionError("corner_view must not touch the image when there's "
+                             "no front reference to compare against")
 
     monkeypatch.setattr(side_module, "load_rgb_array", _fail_if_called)
     monkeypatch.setattr(side_module, "get_vehicle_detector", _fail_if_called)
-    monkeypatch.setattr(side_module, "get_make_classifier", _fail_if_called)
 
     decision, reason, detail = side_module._identity_via_corner_view(
         "does-not-matter.jpg", front_reference_image=None)
@@ -182,6 +174,68 @@ def test_corner_view_manual_review_on_low_front_similarity(monkeypatch):
         "does-not-matter.jpg", front_reference_image="fake-front.jpg", similarity_min=0.9)
     assert decision == "MANUAL_REVIEW"
     assert "uncalibrated signal" in reason
+
+
+def _stub_pure_side_profile_deps(monkeypatch, color_similarity: float):
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
+
+    class _FakeDetector:
+        def best_truck(self, arr):
+            return None
+
+    monkeypatch.setattr(side_module, "get_vehicle_detector", lambda: _FakeDetector())
+    monkeypatch.setattr(side_module, "_color_histogram_similarity", lambda a, b: color_similarity)
+
+
+def test_pure_side_profile_without_front_reference_is_unverifiable(monkeypatch):
+    """Same as corner_view's no-reference case -- no plate, no front grille, and
+    now no front reference photo either means there's nothing left to check at
+    all. Must bail out before touching the image."""
+    import vfiv.side_image.side_image_check as side_module
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("pure_side_profile must not touch the image when "
+                             "there's no front reference to compare against")
+
+    monkeypatch.setattr(side_module, "load_rgb_array", _fail_if_called)
+    monkeypatch.setattr(side_module, "get_vehicle_detector", _fail_if_called)
+
+    decision, reason, detail = side_module._identity_via_pure_side_profile(
+        "does-not-matter.jpg", front_reference_image=None)
+    assert decision == "MANUAL_REVIEW"
+    assert "no front reference photo" in reason
+    assert detail["color_hist_similarity"] is None
+
+
+def test_pure_side_profile_never_passes_even_on_perfect_color_match(monkeypatch):
+    """Individual-vehicle identity is never solved from a bare side profile alone
+    -- even a perfect colour match is capped at MANUAL_REVIEW, same principle as
+    the old make-classifier version (two different trucks of the same colour
+    would pass this too)."""
+    import vfiv.side_image.side_image_check as side_module
+
+    _stub_pure_side_profile_deps(monkeypatch, color_similarity=1.0)
+
+    decision, reason, detail = side_module._identity_via_pure_side_profile(
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg", color_hist_min=0.8)
+    assert decision == "MANUAL_REVIEW"
+    assert detail["color_hist_similarity"] == 1.0
+
+
+def test_pure_side_profile_color_mismatch_is_manual_review_not_reject(monkeypatch):
+    """Unlike the make classifier it replaced, a colour mismatch here must NOT
+    auto-reject -- same uncalibrated-threshold caveat as corner_view's colour
+    check, so it stays a lead for a human rather than a verdict."""
+    import vfiv.side_image.side_image_check as side_module
+
+    _stub_pure_side_profile_deps(monkeypatch, color_similarity=0.1)
+
+    decision, reason, detail = side_module._identity_via_pure_side_profile(
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg", color_hist_min=0.8)
+    assert decision == "MANUAL_REVIEW"
+    assert "possible mismatch" in reason
 
 
 def test_check_side_identity_routes_corner_view_without_claimed_make_dependency(monkeypatch):

@@ -156,10 +156,8 @@ class SideImageIdentityResult(BaseModel):
     claimed_vrn: str
     claimed_make: str
     identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
-    make_read: Optional[str] = None
-    make_matched: Optional[bool] = None
     front_similarity: Optional[float] = None  # 0..1, corner_view bucket only
-    color_hist_similarity: Optional[float] = None  # -1..1, corner_view bucket only
+    color_hist_similarity: Optional[float] = None  # -1..1, corner_view or pure_side_profile only
     vrn_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE, vrn_visible bucket only
     reason: str
     error: Optional[str] = None

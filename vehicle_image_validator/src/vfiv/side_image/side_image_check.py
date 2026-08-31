@@ -20,47 +20,62 @@ docstring for why this has to live in code, same reasoning applies here):
    model to flag suspected lift axles rather than silently guess.
 
 3. Identity-to-claimed-vehicle — routed by ``SideImageTypeClassifier``
-   (``backends/siglip.py``) into three buckets of DECREASING reliability:
+   (``backends/siglip.py``) into three buckets of DECREASING reliability. NO
+   bucket uses the make classifier any more (see below for why it was dropped
+   from both places that used to lean on it):
      a. vrn_visible       -> re-run Q2's own VRN detector/matcher on this image
                              (strongest — exact identity, reuses ``vrn_check.py``
                              as-is, no new logic).
-     b. corner_view       -> a direct SigLIP embedding cosine-similarity between
-                             this crop and the claimed truck's OWN on-file front
-                             photo — a 1:1 pairwise compare, NOT a vector-DB
-                             nearest-neighbor search. No make check here at all
-                             (see below for why) — without a
-                             ``front_reference_image`` there's simply nothing to
-                             compare against, so this bucket is MANUAL_REVIEW
-                             ("unverifiable") rather than falling back to a
-                             weaker signal. UNCALIBRATED: a general embedding is
-                             trained for semantic similarity, not individual-
-                             vehicle re-identification, so it may not reliably
-                             separate "same truck, different angle" from
-                             "different truck, same make/model/colour" — validate
-                             ``config.SIDE_IMAGE_SIMILARITY_MIN`` against real
-                             labeled pairs before trusting it. Now this bucket's
-                             ONLY signal (see below), so that validation matters
-                             more than it used to.
-     c. pure_side_profile  -> make/model match ONLY (reuses Q3's SigLIP zero-shot
-                             classifier) — this is the ONE bucket that still uses
-                             it, since there's nothing else to go on for a bare
-                             side profile (no plate, no front grille, no
-                             embedding to compare). Deliberately NOT used in
-                             corner_view any more: it's a coarse, brand-only
-                             zero-shot read (compares the image against 8 fixed
-                             brand-name text prompts, never actually reads
-                             painted logos/text) that can misfire between
-                             visually-similar cab shapes across manufacturers —
-                             see ``backends/siglip.py``'s ``MakeClassifier`` — so
-                             it should never be the thing that gates a bucket
-                             that has a stronger identity signal available. The
-                             individual-vehicle question is NOT solved here
-                             either way — this is the genuinely open piece
-                             flagged in the design discussion, not an
-                             integration task. A match at this level is capped at
-                             MANUAL_REVIEW, never a confident PASS, because two
-                             different trucks of the same make/model/colour would
-                             pass this too.
+     b. corner_view       -> a SigLIP embedding cosine-similarity AND a colour-
+                             histogram comparison, both against the claimed
+                             truck's OWN on-file front photo — direct 1:1
+                             pairwise compares, NOT a vector-DB nearest-neighbor
+                             search. Without a ``front_reference_image`` there's
+                             simply nothing to compare against, so this bucket
+                             is MANUAL_REVIEW ("unverifiable"). Both signals are
+                             UNCALIBRATED (see ``config.SIDE_IMAGE_SIMILARITY_MIN``/
+                             ``SIDE_IMAGE_COLOR_HIST_MIN``) — a general SigLIP
+                             embedding is trained for semantic similarity, not
+                             individual-vehicle re-identification, so it may not
+                             reliably separate "same truck, different angle"
+                             from "different truck, same make/model/colour";
+                             colour can shift with lighting/exposure between two
+                             photos of the same truck. Validate both against
+                             real labeled pairs before trusting them in
+                             production.
+     c. pure_side_profile  -> colour-histogram ONLY, against the same front
+                             reference photo — no embedding-similarity check
+                             here (SigLIP's embedding is angle-sensitive, so a
+                             side profile vs. a front-on photo would likely
+                             score low even for the same truck; colour is
+                             roughly angle-invariant and is the one corner_view
+                             signal that actually transfers). Without a
+                             ``front_reference_image``, also MANUAL_REVIEW
+                             ("unverifiable") — there's nothing else to go on
+                             for a bare side profile (no plate, no front
+                             grille). The individual-vehicle question is NOT
+                             solved here either way — this is the genuinely
+                             open piece flagged in the design discussion, not
+                             an integration task — so even a colour MATCH is
+                             capped at MANUAL_REVIEW, never a confident PASS
+                             (two different trucks of the same colour would
+                             pass this too), and (unlike the make classifier
+                             this replaced) a colour MISMATCH is also
+                             MANUAL_REVIEW rather than an outright REJECT, given
+                             the same uncalibrated-threshold caveat as
+                             corner_view's colour check.
+
+   Make classifier removed from BOTH buckets above (formerly used in
+   pure_side_profile, briefly also in corner_view): it's a coarse, brand-only
+   zero-shot read (``backends/siglip.py``'s ``MakeClassifier`` — compares the
+   image against 8 fixed brand-name text prompts, never actually reads painted
+   logos/text) that can misfire between visually-similar cab shapes across
+   manufacturers — confirmed on a real upload during manual testing (a genuine
+   Tata read as "Eicher" twice, on separate uploads of the same photo). Its old
+   REJECT-on-mismatch behaviour meant a genuine truck could get auto-rejected
+   on what amounts to a coin-flip brand read — replaced everywhere by the
+   colour-histogram check, a real deterministic signal instead of a zero-shot
+   classifier's guess.
 
 Overall ``decision`` takes the worst of whichever checks actually ran — REJECT >
 MANUAL_REVIEW > PASS, same ordering as ``combined.py``.
@@ -69,11 +84,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from truck_extract_match.make.aliases import match_make
-
 from vfiv import config
 from vfiv.backends.image_io import load_rgb_array
-from vfiv.backends.siglip import get_make_classifier, get_side_image_type_classifier, get_siglip_model
+from vfiv.backends.siglip import get_side_image_type_classifier, get_siglip_model
 from vfiv.backends.vehicle import get_vehicle_detector
 from vfiv.schemas import AxleCountResult, SideImageCheckResult, SideImageIdentityResult
 from vfiv.base import call_vlm_json
@@ -330,18 +343,42 @@ def _identity_via_corner_view(
             detail)
 
 
-def _identity_via_pure_side_profile(image, claimed_make: str) -> tuple[str, str, dict]:
-    """Make/model-level ONLY — see module docstring. Never a confident PASS."""
+def _identity_via_pure_side_profile(
+    image, front_reference_image,
+    color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
+) -> tuple[str, str, dict]:
+    """Colour-histogram ONLY now — no make classifier here any more (see module
+    docstring for why it was dropped from this bucket too). No embedding-
+    similarity check either: SigLIP's general embedding is angle-sensitive, so a
+    pure side profile vs. a front-on reference photo would likely score low even
+    for the exact same truck — colour is roughly angle-invariant (same paint from
+    any angle) and is the one signal from ``_identity_via_corner_view``'s toolkit
+    that actually transfers here. Like the old make-based version, NEVER a
+    confident PASS — individual-vehicle identity genuinely isn't solved here even
+    with a colour match (two different trucks of the same colour would pass this
+    too) — but UNLIKE the old make-classifier version, also never an outright
+    REJECT: this shares corner_view's colour check's uncalibrated-threshold
+    caveat, so a mismatch here is a lead for a human, not an auto-reject."""
+    detail = {"bucket": "pure_side_profile", "color_hist_similarity": None}
+
+    if front_reference_image is None:
+        return ("MANUAL_REVIEW",
+                "[pure_side_profile] no front reference photo supplied — identity "
+                "isn't verifiable from a bare side profile alone", detail)
+
     crop = _truck_crop(image)
-    siglip_make = get_make_classifier().predict(crop)
-    make_match = match_make(siglip_make["make"], claimed_make)
-    detail = {"bucket": "pure_side_profile", "make_read": siglip_make["make"],
-              "make_matched": make_match.matched}
-    if not make_match.matched:
-        return "REJECT", f"[pure_side_profile] make mismatch (read '{siglip_make['make']}')", detail
+    ref_crop = _truck_crop(front_reference_image)
+    color_similarity = _color_histogram_similarity(crop, ref_crop)
+    detail["color_hist_similarity"] = color_similarity
+
+    if color_similarity < color_hist_min:
+        return ("MANUAL_REVIEW",
+                (f"[pure_side_profile] colour-histogram similarity {color_similarity:.4f} "
+                 f"< {color_hist_min:.4f} — possible mismatch, human check"), detail)
     return ("MANUAL_REVIEW",
-            ("[pure_side_profile] make matches, but individual-vehicle identity "
-             "isn't verifiable from a bare side profile alone — human check"), detail)
+            (f"[pure_side_profile] colour-histogram {color_similarity:.4f} matches, but "
+             "individual-vehicle identity isn't verifiable from a bare side profile "
+             "alone — human check"), detail)
 
 
 def check_axle_count(
@@ -411,11 +448,12 @@ def check_side_identity(
     ``check_side_image_upload``; exposed standalone so it's independently testable
     from axle-count/duplicate.
 
-    ``front_reference_image`` is this truck's own already-accepted front photo,
-    used by the corner-view bucket's embedding-similarity AND colour-histogram
-    checks — its only identity signals; without it, that bucket is MANUAL_REVIEW
-    ("unverifiable") rather than falling back to the weaker make classifier (which
-    is reserved for the pure-side-profile bucket only — see module docstring)."""
+    ``front_reference_image`` is this truck's own already-accepted front photo —
+    used by corner_view's embedding-similarity AND colour-histogram checks, and by
+    pure_side_profile's colour-histogram-only check (no embedding there — see that
+    function's docstring for why). Without it, both buckets are MANUAL_REVIEW
+    ("unverifiable"); no bucket falls back to the make classifier any more (see
+    module docstring for why it was dropped from both)."""
     try:
         arr = load_rgb_array(image)
         bucket = get_side_image_type_classifier().predict(arr)["bucket"]
@@ -425,7 +463,8 @@ def check_side_identity(
             decision, reason, detail = _identity_via_corner_view(
                 image, front_reference_image, similarity_min, color_hist_min)
         else:
-            decision, reason, detail = _identity_via_pure_side_profile(image, claimed_make)
+            decision, reason, detail = _identity_via_pure_side_profile(
+                image, front_reference_image, color_hist_min)
     except Exception as e:
         return SideImageIdentityResult(
             decision="MANUAL_REVIEW", checked=False, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
@@ -433,8 +472,7 @@ def check_side_identity(
         )
     return SideImageIdentityResult(
         decision=decision, checked=True, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
-        identity_bucket=detail.get("bucket"), make_read=detail.get("make_read"),
-        make_matched=detail.get("make_matched"), front_similarity=detail.get("front_similarity"),
+        identity_bucket=detail.get("bucket"), front_similarity=detail.get("front_similarity"),
         color_hist_similarity=detail.get("color_hist_similarity"),
         vrn_status=detail.get("vrn_status"), reason=reason,
     )

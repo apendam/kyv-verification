@@ -500,22 +500,27 @@ the claimed VRN/make? Routed by `SideImageTypeClassifier`
 |---|---|---|
 | `vrn_visible` | Re-runs Q2's own VRN detector/matcher on this image, unchanged | Strong — exact identity |
 | `corner_view` | A SigLIP embedding similarity + a colour-histogram comparison, both against this truck's own on-file front photo | Uncalibrated — see caveat below |
-| `pure_side_profile` | Make/model match only | Weak by design — never a confident PASS alone |
+| `pure_side_profile` | Colour-histogram comparison only, against the same front reference photo | Weak by design — never a confident PASS alone |
 
-**No make/model check in `corner_view` any more** — it used to run there too, but
-was dropped: `MakeClassifier` is a coarse, brand-only zero-shot read (compares the
-image against 8 fixed brand-name text prompts, never actually reads painted
-logos/text — see the known zero-shot-make limitation flagged above under "SigLIP
-2") that can misfire between visually-similar cab shapes across manufacturers
-(confirmed on a real upload during manual testing: a genuine Tata read as
-"Eicher", with the top few brands separated by only single-digit percentage
-points — see `diagnose_side_image.py`), and a mismatch used to REJECT outright
-*before* the (stronger) embedding-similarity check even ran — so a genuine truck
-could get auto-rejected on what amounts to a coin-flip brand read.
-Now `corner_view` relies on two direct 1:1 comparisons against
-`front_reference_image` instead — a SigLIP embedding similarity and a colour
-histogram (see below); without a `front_reference_image` to compare against,
-it's `MANUAL_REVIEW` ("unverifiable"), never a fallback to the make classifier.
+**No make/model check anywhere in this module any more** — it used to run in both
+`corner_view` and `pure_side_profile`, and was dropped from both: `MakeClassifier`
+is a coarse, brand-only zero-shot read (compares the image against 8 fixed
+brand-name text prompts, never actually reads painted logos/text — see the known
+zero-shot-make limitation flagged above under "SigLIP 2") that can misfire between
+visually-similar cab shapes across manufacturers — confirmed on a real upload
+during manual testing: a genuine Tata read as "Eicher" **twice**, on separate
+uploads of the same photo (see `diagnose_side_image.py`). Its old REJECT-on-
+mismatch behaviour meant a genuine truck could get auto-rejected on what amounts
+to a coin-flip brand read.
+
+`corner_view` relies on two direct 1:1 comparisons against `front_reference_image`
+instead — a SigLIP embedding similarity and a colour histogram (see below);
+`pure_side_profile` relies on the colour-histogram comparison alone (no embedding
+check there — SigLIP's embedding is angle-sensitive, so a side profile vs. a
+front-on photo would likely score low even for the same truck; colour is roughly
+angle-invariant and is the one signal that transfers). Without a
+`front_reference_image` to compare against, both buckets are `MANUAL_REVIEW`
+("unverifiable") — no fallback to the make classifier.
 
 The `corner_view` embedding-similarity check is a **direct 1:1 comparison**
 (`front_reference_image` vs. this crop), not a vector-DB search — and it is
@@ -532,20 +537,22 @@ call involved: an RGB histogram correlation between the side photo's vehicle cro
 and the front reference's vehicle crop. Both crops come from the same vehicle
 detector already used elsewhere in this module (`get_vehicle_detector().best_truck()`)
 — **never the raw uncropped photo**, since background/road/sky colour would
-otherwise swamp the actual paint-colour signal. Folded into `corner_view`
+otherwise swamp the actual paint-colour signal. In `corner_view`, folded in
 alongside the embedding-similarity check (either one failing is `MANUAL_REVIEW`,
-never `REJECT` on its own) — also **uncalibrated**: lighting/exposure can differ
-meaningfully between two photos of the same truck shot at different times, so
-validate `config.SIDE_IMAGE_COLOR_HIST_MIN` against real same-truck/different-truck
-pairs before trusting it, same caveat as the embedding-similarity threshold.
+never `REJECT` on its own); in `pure_side_profile`, it's the only signal —
+capped at `MANUAL_REVIEW` even on a perfect match (individual-vehicle identity
+still isn't solved — two different trucks of the same colour would pass this
+too), and (unlike the make classifier it replaced) also `MANUAL_REVIEW` rather
+than `REJECT` on a mismatch, same uncalibrated-threshold posture as `corner_view`.
+Also **uncalibrated** in general: lighting/exposure can differ meaningfully
+between two photos of the same truck shot at different times, so validate
+`config.SIDE_IMAGE_COLOR_HIST_MIN` against real same-truck/different-truck pairs
+before trusting it, same caveat as the embedding-similarity threshold.
 
-The `pure_side_profile` bucket is the genuinely open problem flagged in design
-discussion, not solved here — a make/model match from that bucket alone is capped
-at `MANUAL_REVIEW`. It's also the only bucket that still uses the make classifier
-at all, since a bare side profile has nothing else to go on (no plate, no front
-grille) — the colour-histogram check isn't used there (yet): unlike the make
-classifier it doesn't care about viewing angle, so it's a candidate to replace the
-make check there too, but that's not implemented as of this writing.
+The `pure_side_profile` bucket remains the genuinely open problem flagged in
+design discussion, not solved here — a bare side profile has nothing but colour
+to go on (no plate, no front grille), and colour alone can never prove individual-
+vehicle identity.
 
 **Axle-count source consistency** (`decide_axle_source_consistency`,
 `check_axle_count`'s optional `axle_source`/`vehicle_mapper` params) — a separate,
