@@ -46,3 +46,54 @@ def test_generic_coco_yolo_misses_this_truck_known_limitation():
     assert result.checked is True
     assert result.decision == "REJECT"
     assert result.vehicle_type == "other"  # YOLO didn't detect a truck/bus above threshold
+
+
+# --- Claimed vehicle type (truck vs bus) ---------------------------------------
+
+from vfiv.front_image.front_image import decide_front_image
+
+
+def _classified(vehicle_type="truck", **overrides):
+    base = {
+        "checked": True, "vehicle_type": vehicle_type, "view": "front",
+        "is_front": True, "front_complete": True, "confidence": 95.0,
+        "is_screenshot": False, "is_photo_of_photo": False,
+        "ai_generated": False, "ai_confidence": 0.0, "reason": "clear front view",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_claimed_vehicle_type_match_still_passes():
+    result = decide_front_image(_classified(vehicle_type="truck"), claimed_vehicle_type="truck")
+    assert result.decision == "PASS"
+    assert result.vehicle_type_status == "MATCH"
+    assert result.claimed_vehicle_type == "truck"
+
+
+def test_claimed_vehicle_type_mismatch_is_manual_review_not_reject():
+    """A generic COCO detector confusing truck/bus is a real, plausible failure
+    mode -- never a solo REJECT."""
+    result = decide_front_image(_classified(vehicle_type="bus"), claimed_vehicle_type="truck")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.vehicle_type_status == "MISMATCH"
+
+
+def test_claimed_vehicle_type_omitted_skips_check_entirely():
+    """No claim given -- the new check must not run at all, so a would-be-mismatch
+    ('bus' detected, hypothetically claimed 'truck') never surfaces."""
+    result = decide_front_image(_classified(vehicle_type="bus"))
+    assert result.decision == "PASS"
+    assert result.vehicle_type_status is None
+    assert result.claimed_vehicle_type is None
+
+
+def test_existing_hard_reject_wins_over_vehicle_type_check():
+    """An existing hard gate (e.g. screenshot) must still REJECT even when a
+    vehicle-type claim is given -- the new check only ever runs once every other
+    hard gate has already cleared."""
+    result = decide_front_image(_classified(is_screenshot=True), claimed_vehicle_type="truck")
+    assert result.decision == "REJECT"
+    assert "screenshot" in result.reason
+    assert result.vehicle_type_status is None  # never reached
+    assert result.claimed_vehicle_type == "truck"  # still echoed for the record

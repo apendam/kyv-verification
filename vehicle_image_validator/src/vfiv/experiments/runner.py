@@ -19,12 +19,13 @@ from vfiv.front_image.vrn_check import decide_vrn
 _SEVERITY = {"REJECT": 2, "MANUAL_REVIEW": 1, "PASS": 0}
 
 
-def _decide_q1(raw1: dict, conf_min: float, ai_reject_conf: float) -> FrontImageResult:
+def _decide_q1(raw1: dict, conf_min: float, ai_reject_conf: float,
+               claimed_vehicle_type: str | None = None) -> FrontImageResult:
     if not raw1.get("checked"):
         return FrontImageResult(decision="MANUAL_REVIEW",
                                 reason=f"Q1 unavailable ({raw1.get('error', '?')})",
                                 checked=False, error=raw1.get("error"))
-    return decide_front_image(raw1, conf_min, ai_reject_conf)
+    return decide_front_image(raw1, conf_min, ai_reject_conf, claimed_vehicle_type)
 
 
 def _decide_q2(raw2: dict, claimed_vrn: str, max_confusable_edits: int) -> VrnCheckResult:
@@ -44,15 +45,18 @@ def run_q1_only(
     ai_reject_conf: float = config.FRONT_AI_REJECT_CONF,
     claimed_vrn: str | None = None,
     upload_id: str | None = None,
+    claimed_vehicle_type: str | None = None,
 ) -> FrontImageResult:
     """Q1 in isolation — no VRN/make needed for the gate itself, useful for
     iterating on the front-gate backend alone. Pass BOTH ``claimed_vrn`` and
     ``upload_id`` to also run the cross-upload duplicate check
     (``duplicate_check.py``, ``image_type="front"``) and fold its
     verdict into the returned decision — same opt-in-via-``upload_id`` pattern as
-    ``side_image/side_image_check.py``'s ``check_side_image_upload``."""
+    ``side_image/side_image_check.py``'s ``check_side_image_upload``. Pass
+    ``claimed_vehicle_type`` ("truck" | "bus") to also check the detected
+    category against it — see ``front_image.decide_front_image``."""
     raw1 = q1_select.classify_q1(image, q1_backend, gemini_model=q1_gemini_model)
-    result = _decide_q1(raw1, conf_min, ai_reject_conf)
+    result = _decide_q1(raw1, conf_min, ai_reject_conf, claimed_vehicle_type)
 
     if not (claimed_vrn and upload_id):
         return result
@@ -151,6 +155,7 @@ def run_test_case(
     model_conf_min: float = config.MODEL_CONF_MIN,
     model_match_min: float = config.MODEL_MATCH_MIN,
     upload_id: str | None = None,
+    claimed_vehicle_type: str | None = None,
 ) -> ExperimentResult:
     """End-to-end: Q1 -> (Q2 and Q3). Q1 gates Q2+Q3 entirely (skipped, saving the
     Rekognition/SigLIP/Gemini calls, if Q1 doesn't PASS); once Q1 passes, Q2 and Q3 run
@@ -161,9 +166,12 @@ def run_test_case(
     Pass ``upload_id`` to also run the duplicate check (``image_type="front"``) as
     part of Q1 — ``claimed_vrn`` is already mandatory here (Q2 needs it regardless),
     so unlike the standalone Q1 tab this only needs the one extra id to turn on.
+    Pass ``claimed_vehicle_type`` ("truck" | "bus") to also check the detected
+    category as part of Q1 — see ``front_image.decide_front_image``.
     """
     front = run_q1_only(image, q1_backend, q1_gemini_model, conf_min, ai_reject_conf,
-                        claimed_vrn=claimed_vrn, upload_id=upload_id)
+                        claimed_vrn=claimed_vrn, upload_id=upload_id,
+                        claimed_vehicle_type=claimed_vehicle_type)
     if front.decision != "PASS":
         return ExperimentResult(q1_backend=q1_backend, q1=front,
                                 overall_decision=front.decision, overall_reason=front.reason)

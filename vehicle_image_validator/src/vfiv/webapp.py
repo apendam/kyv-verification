@@ -216,12 +216,14 @@ def _upload_id_or_random(value: str | None) -> str:
 
 # --- Q1 only ------------------------------------------------------------------
 
-def run_q1_individual(image, q1_backend, q1_gemini_model, claimed_vrn=None, upload_id=None):
+def run_q1_individual(image, q1_backend, q1_gemini_model, claimed_vrn=None, upload_id=None,
+                      claimed_vehicle_type=None):
     if image is None:
         return "### Upload an image first.", {}
     claimed_vrn = _clean_optional(claimed_vrn)
     result = run_q1_only(image, q1_backend, q1_gemini_model, claimed_vrn=claimed_vrn,
-                         upload_id=_upload_id_or_random(upload_id) if claimed_vrn else None)
+                         upload_id=_upload_id_or_random(upload_id) if claimed_vrn else None,
+                         claimed_vehicle_type=_clean_optional(claimed_vehicle_type))
     return _banner(result.decision, result.reason), result.model_dump()
 
 
@@ -254,7 +256,7 @@ def run_q3_individual(image, make, model, q3_make_backend, q3_model_backend,
 def run_e2e_individual(image, truck_number, make, model, q1_backend, q2_backend,
                        q3_make_backend, q3_model_backend,
                        q1_gemini_model, q2_gemini_model, q3_make_gemini_model, q3_model_gemini_model,
-                       upload_id=None):
+                       upload_id=None, claimed_vehicle_type=None):
     if image is None:
         return "### Upload an image first.", {}
     if not truck_number or not make:
@@ -267,6 +269,7 @@ def run_e2e_individual(image, truck_number, make, model, q1_backend, q2_backend,
         q1_gemini_model=q1_gemini_model, q2_gemini_model=q2_gemini_model,
         q3_make_gemini_model=q3_make_gemini_model, q3_model_gemini_model=q3_model_gemini_model,
         upload_id=_upload_id_or_random(upload_id),
+        claimed_vehicle_type=_clean_optional(claimed_vehicle_type),
     )
     return _banner(result.overall_decision, result.overall_reason), result.model_dump()
 
@@ -401,7 +404,8 @@ def run_side_duplicate_individual(image, truck_number, upload_id, top_k, similar
 # --- Side/axle: end-to-end ----------------------------------------------------------
 
 def run_side_individual(image, truck_number, make, axle_count, upload_id, front_reference,
-                        axle_backend, gemini_model, axle_source, vehicle_mapper):
+                        axle_backend, gemini_model, axle_source, vehicle_mapper,
+                        claimed_vehicle_type=None):
     if image is None:
         return "### Upload an image first.", {}
     if not truck_number or not make or axle_count is None:
@@ -412,6 +416,7 @@ def run_side_individual(image, truck_number, make, axle_count, upload_id, front_
         axle_backend=axle_backend, axle_model=gemini_model if axle_backend == "gemini" else None,
         axle_source=_clean_optional(axle_source), vehicle_mapper=_clean_optional(vehicle_mapper),
         type_backend=axle_backend, type_model=gemini_model if axle_backend == "gemini" else None,
+        claimed_vehicle_type=_clean_optional(claimed_vehicle_type),
     )
     return _banner(result.decision, result.reason), result.model_dump()
 
@@ -501,13 +506,17 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                             q1_upload_id_in = gr.Textbox(
                                 label="Upload id (optional — auto-generated if left blank; only "
                                       "needed if you want this stored under a specific id)")
+                            q1_vehicle_type_in = gr.Dropdown(
+                                ["", "truck", "bus"], value="",
+                                label="Claimed vehicle type (optional — both truck and bus VRNs "
+                                      "are issued; leave blank to skip this check)")
                             q1_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             q1_decision_out = gr.Markdown()
                             q1_json_out = gr.JSON(label="Full result")
                     q1_run_btn.click(
                         run_q1_individual,
-                        inputs=[q1_image_in, q1_dd, q1_gm_dd, q1_vrn_in, q1_upload_id_in],
+                        inputs=[q1_image_in, q1_dd, q1_gm_dd, q1_vrn_in, q1_upload_id_in, q1_vehicle_type_in],
                         outputs=[q1_decision_out, q1_json_out])
 
                 # --- Q2 ---------------------------------------------------------------
@@ -569,6 +578,10 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                                 label="Upload id (optional — auto-generated if left blank; the "
                                       "duplicate check against the 'front' reference library always "
                                       "runs as part of Q1)")
+                            e2e_vehicle_type_in = gr.Dropdown(
+                                ["", "truck", "bus"], value="",
+                                label="Claimed vehicle type (optional — both truck and bus VRNs "
+                                      "are issued; leave blank to skip this check)")
                             e2e_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             e2e_decision_out = gr.Markdown()
@@ -577,7 +590,8 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                         run_e2e_individual,
                         inputs=[e2e_image_in, e2e_vrn_in, e2e_make_in, e2e_model_in,
                                e2e_q1_dd, e2e_q2_dd, e2e_q3m_dd, e2e_q3mo_dd,
-                               e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm, e2e_upload_id_in],
+                               e2e_q1_gm, e2e_q2_gm, e2e_q3m_gm, e2e_q3mo_gm, e2e_upload_id_in,
+                               e2e_vehicle_type_in],
                         outputs=[e2e_decision_out, e2e_json_out],
                     )
 
@@ -694,6 +708,10 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                             side_vehicle_mapper_in = gr.Textbox(
                                 label="Vehicle mapper class (e.g. VC12 — only used when source is "
                                       "\"manual\")")
+                            side_vehicle_type_in = gr.Dropdown(
+                                ["", "truck", "bus"], value="",
+                                label="Claimed vehicle type (optional — both truck and bus VRNs "
+                                      "are issued; leave blank to skip this check)")
                             side_run_btn = gr.Button("Run", variant="primary")
                         with gr.Column():
                             side_decision_out = gr.Markdown()
@@ -702,7 +720,7 @@ with gr.Blocks(title="Vehicle Image Validator — Test Interface") as demo:
                         run_side_individual,
                         inputs=[side_image_in, side_vrn_in, side_make_in, side_axle_in,
                                side_upload_id_in, side_front_ref_in, axle_dd, axle_gm_dd,
-                               side_axle_source_in, side_vehicle_mapper_in],
+                               side_axle_source_in, side_vehicle_mapper_in, side_vehicle_type_in],
                         outputs=[side_decision_out, side_json_out],
                     )
 

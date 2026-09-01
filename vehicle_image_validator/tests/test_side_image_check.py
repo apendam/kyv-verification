@@ -8,6 +8,7 @@ from vfiv.side_image.side_image_check import (
     check_axle_count,
     check_side_completeness,
     check_side_identity,
+    check_side_vehicle_type,
     classify_axle_count,
     decide_axle_count,
     decide_axle_source_consistency,
@@ -461,3 +462,49 @@ def test_check_side_completeness_threshold_is_overridable(monkeypatch):
 
     lenient = check_side_completeness("does-not-matter.jpg", completeness_min=0.01)
     assert lenient.decision == "PASS"
+
+
+# --- Vehicle category (truck vs bus, matched against the claim) ---------------------
+
+def test_check_side_vehicle_type_matches_claim(monkeypatch):
+    det = Detection(bbox=(100, 100, 900, 900), conf=0.9, frame_wh=(1000, 1000), cls_name="truck")
+    _stub_completeness_deps(monkeypatch, det)
+
+    result = check_side_vehicle_type("does-not-matter.jpg", claimed_vehicle_type="truck")
+    assert result.decision == "PASS"
+    assert result.status == "MATCH"
+    assert result.detected_vehicle_type == "truck"
+    assert result.claimed_vehicle_type == "truck"
+
+
+def test_check_side_vehicle_type_mismatch_is_manual_review_not_reject(monkeypatch):
+    det = Detection(bbox=(100, 100, 900, 900), conf=0.9, frame_wh=(1000, 1000), cls_name="bus")
+    _stub_completeness_deps(monkeypatch, det)
+
+    result = check_side_vehicle_type("does-not-matter.jpg", claimed_vehicle_type="truck")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.status == "MISMATCH"
+    assert result.detected_vehicle_type == "bus"
+
+
+def test_check_side_vehicle_type_manual_review_when_no_truck_detected(monkeypatch):
+    _stub_completeness_deps(monkeypatch, None)
+
+    result = check_side_vehicle_type("does-not-matter.jpg", claimed_vehicle_type="truck")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.status == "UNREADABLE"
+    assert result.detected_vehicle_type is None
+
+
+def test_check_side_vehicle_type_degrades_on_exception(monkeypatch):
+    import vfiv.side_image.side_image_check as side_module
+
+    def _boom(image):
+        raise RuntimeError("corrupt image file")
+
+    monkeypatch.setattr(side_module, "load_rgb_array", _boom)
+
+    result = check_side_vehicle_type("does-not-matter.jpg", claimed_vehicle_type="truck")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "corrupt image file" in result.reason

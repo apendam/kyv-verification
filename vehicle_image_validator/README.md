@@ -73,6 +73,26 @@ Decision (`PASS` / `REJECT` / `MANUAL_REVIEW`) is derived from ordered hard chec
 the CV gate or Claude fails — a screenshot verdict with no real vehicle classification
 (or vice versa) isn't a usable result.
 
+**Claimed vehicle category (truck vs bus, opt-in)** — both truck and bus VRNs get
+issued against this platform, so beyond the existing hard gate above (REJECT if the
+detected `vehicle_type` isn't `truck`/`bus` at *all*), passing `claimed_vehicle_type`
+("truck" | "bus") to `validate_front_image`/`validate_upload` also checks whether it's
+the SPECIFIC one claimed (`backends/vehicle.py:decide_vehicle_type_match`, shared with
+the side-image check below). Reuses the SAME YOLO detection already run for the gate —
+no second model call. Only runs once every other hard gate has already cleared, and a
+mismatch only ever downgrades to `MANUAL_REVIEW`, never a solo `REJECT`: the detector is
+an off-the-shelf COCO model (see the known-limitation note above), and confusing a
+covered/box truck for a bus (or vice versa) is a real, plausible failure mode for a
+generic detector, not the kind of confident signal worth auto-rejecting a genuine
+upload over. Omitting `claimed_vehicle_type` skips this check entirely (same opt-in
+pattern as `upload_id` for the duplicate check).
+
+This also fixed a latent, harmless mislabel: `run_gate()` used to hardcode
+`vehicle_type: "truck"` for ANY truck/bus detection — a genuine bus photo was
+correctly let through (`"truck"` is in the `("truck", "bus")` hard-gate set) but
+reported under the wrong label. `Detection` now carries the actual matched COCO class
+name (`cls_name`), so `vehicle_type` correctly reads `"bus"` for a bus.
+
 **Q2 — VRN + plate colour** (real Rekognition + HSV, `truck_extract_match`'s matcher —
 no VLM call anywhere in this module):
 - **plate** — the registration number, read by Rekognition's text detection + Indian-VRN
@@ -682,9 +702,19 @@ webapp auto-generates an `upload_id` when none is given) — scoped to the
 `"side"` `image_type`, so it's never compared against front or FASTag
 embeddings (see the `image_type` scoping above).
 
+**Claimed vehicle category** (`check_side_vehicle_type` — opt-in via
+`claimed_vehicle_type`, same as Q1's identically-named check above) — does the
+DETECTED category (truck vs bus) match the CLAIMED one? Reuses the same
+detector this module already runs for the identity crop/completeness check
+(`get_vehicle_detector().best_truck()`) and the same shared decision logic
+(`backends/vehicle.py:decide_vehicle_type_match`) — no new model, no new
+threshold to calibrate. Omitting `claimed_vehicle_type` skips this check
+entirely; a mismatch is `MANUAL_REVIEW`, never a solo `REJECT` (same
+off-the-shelf-COCO-detector caveat as Q1's).
+
 ```bash
 python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3
-python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3 --backend gemini
+python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "TATA MOTORS LTD" --axle-count 3 --vehicle-type truck --backend gemini
 ```
 
 ## Next

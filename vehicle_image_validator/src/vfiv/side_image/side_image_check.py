@@ -1,11 +1,12 @@
 """Side/axle-image validator — does the axle count match, does this side photo
-actually belong to the SAME truck as the separately-uploaded front photo, and is
-the truck actually fully in frame to begin with?
+actually belong to the SAME truck as the separately-uploaded front photo, is the
+truck actually fully in frame to begin with, and is it even the claimed
+vehicle CATEGORY (truck vs bus)?
 
-Four checks, each independently reported (a single prompt can't run a duplicate
+Five checks, each independently reported (a single prompt can't run a duplicate
 search + a VLM axle count + an OCR/embedding identity check + a CV framing check
-— see combined.py's docstring for why this has to live in code, same reasoning
-applies here):
++ a CV category check — see combined.py's docstring for why this has to live in
+code, same reasoning applies here):
 
 0. Completeness — is the truck cut off at a frame edge? Reuses Q1's own
    YOLO-bbox-vs-frame-edge heuristic (``backends/gate.py``'s
@@ -13,6 +14,13 @@ applies here):
    detector. UNCALIBRATED for side framing (unlike Q1's own tuned use of the
    same score) — a low score here only ever reaches MANUAL_REVIEW, never a solo
    REJECT.
+
+0.5. Vehicle category — is the DETECTED category (truck vs bus, from the same
+   YOLO detector) the CLAIMED one? Both are issued against this platform.
+   Opt-in via ``claimed_vehicle_type`` (see ``check_side_vehicle_type``,
+   ``backends.vehicle.decide_vehicle_type_match`` — the same shared logic Q1
+   uses on the front image). Off-the-shelf COCO detector, not fine-tuned for
+   Indian trucks/buses — a mismatch is MANUAL_REVIEW, never a solo REJECT.
 
 1. Duplicate check — reuses ``duplicate_check.py``'s ``check_duplicate``
    with ``image_type="side"``, only if ``upload_id`` is given. Scoped to the
@@ -105,12 +113,13 @@ from vfiv import config
 from vfiv.backends.gate import completeness_score
 from vfiv.backends.image_io import load_rgb_array
 from vfiv.backends.siglip import get_siglip_model
-from vfiv.backends.vehicle import get_vehicle_detector
+from vfiv.backends.vehicle import decide_vehicle_type_match, get_vehicle_detector
 from vfiv.schemas import (
     AxleCountResult,
     SideCompletenessResult,
     SideImageCheckResult,
     SideImageIdentityResult,
+    SideVehicleTypeResult,
 )
 from vfiv.base import call_vlm_json
 from vfiv.duplicate_check import check_duplicate
@@ -434,6 +443,35 @@ def check_side_completeness(
     )
 
 
+def check_side_vehicle_type(
+    image,
+    claimed_vehicle_type: str,
+) -> SideVehicleTypeResult:
+    """Does the DETECTED vehicle category (truck vs bus) agree with a CLAIMED one?
+    Both truck and bus VRNs get issued against this platform — reuses the same
+    detector this module already runs for the identity crop/completeness check
+    (``get_vehicle_detector().best_truck()``) rather than a second model call, and
+    the shared pure decision logic in ``backends.vehicle.decide_vehicle_type_match``
+    (also used by the front image's Q1 gate). Opt-in — only call this when a
+    claimed vehicle type is actually known; a mismatch is capped at MANUAL_REVIEW,
+    never a solo REJECT (see that function's docstring for why)."""
+    try:
+        arr = load_rgb_array(image)
+        det = get_vehicle_detector().best_truck(arr)
+    except Exception as e:
+        return SideVehicleTypeResult(
+            decision="MANUAL_REVIEW", checked=False, claimed_vehicle_type=claimed_vehicle_type,
+            reason=f"vehicle-type check unavailable ({e})", error=str(e),
+        )
+    detected = det.cls_name if det is not None else None
+    decided = decide_vehicle_type_match(detected, claimed_vehicle_type)
+    return SideVehicleTypeResult(
+        decision=decided["decision"], status=decided["status"], checked=True,
+        claimed_vehicle_type=claimed_vehicle_type.strip().lower() if claimed_vehicle_type else None,
+        detected_vehicle_type=detected, reason=decided["reason"],
+    )
+
+
 def _identity_via_corner_view(
     image, front_reference_image,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
@@ -650,12 +688,14 @@ def check_side_image_upload(
     vehicle_mapper: str | None = None,
     type_backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
     type_model: str | None = None,
+    claimed_vehicle_type: str | None = None,
 ) -> SideImageCheckResult:
     """The single entry point for a side/axle-image upload. Runs completeness
     (``check_side_completeness``), duplicate check (if ``upload_id`` given), axle
-    count (``check_axle_count``), and identity-binding (``check_side_identity``),
-    then takes the worst decision across whichever checks ran — see module
-    docstring for the full breakdown.
+    count (``check_axle_count``), identity-binding (``check_side_identity``), and
+    vehicle-category check (``check_side_vehicle_type``, opt-in via
+    ``claimed_vehicle_type``), then takes the worst decision across whichever
+    checks ran — see module docstring for the full breakdown.
 
     ``axle_backend`` — "claude" (default) | "gemini" — selects which model reads
     the axle count. ``type_backend`` — same choices — selects which model routes
@@ -666,6 +706,10 @@ def check_side_image_upload(
     Pass ``axle_source`` ("auto" | "manual") + (for "manual") ``vehicle_mapper`` to
     also run the RC-derived axle-count consistency check — see
     ``check_axle_count``'s docstring.
+
+    Pass ``claimed_vehicle_type`` ("truck" | "bus") to also run
+    ``check_side_vehicle_type`` — omit it to skip that check entirely, same
+    opt-in pattern as ``upload_id``/``axle_source`` above.
     """
     try:
         completeness = check_side_completeness(image, completeness_min=side_image_completeness_min)
@@ -676,6 +720,8 @@ def check_side_image_upload(
         identity = check_side_identity(image, claimed_vrn, claimed_make, front_reference_image,
                                        side_image_similarity_min, side_image_color_hist_min,
                                        type_backend=type_backend, type_model=type_model)
+        vehicle_type = (check_side_vehicle_type(image, claimed_vehicle_type)
+                        if claimed_vehicle_type else None)
     except Exception as e:
         return SideImageCheckResult(
             decision="MANUAL_REVIEW", checked=False,
@@ -686,12 +732,16 @@ def check_side_image_upload(
     decisions = [completeness.decision, axle.decision, identity.decision]
     if dup is not None:
         decisions.append(dup.decision)
+    if vehicle_type is not None:
+        decisions.append(vehicle_type.decision)
     overall = _worst_decision(*decisions)
 
     reason_parts = [f"completeness: {completeness.reason}", f"axle: {axle.reason}",
                      f"identity: {identity.reason}"]
     if dup is not None:
         reason_parts.append(f"duplicate: {dup.reason}")
+    if vehicle_type is not None:
+        reason_parts.append(f"vehicle type: {vehicle_type.reason}")
 
     return SideImageCheckResult(
         decision=overall,
@@ -707,6 +757,9 @@ def check_side_image_upload(
         identity_bucket=identity.identity_bucket,
         identity_decision=identity.decision,
         completeness_score=completeness.completeness_score,
+        claimed_vehicle_type=vehicle_type.claimed_vehicle_type if vehicle_type is not None else None,
+        detected_vehicle_type=vehicle_type.detected_vehicle_type if vehicle_type is not None else None,
+        vehicle_type_status=vehicle_type.status if vehicle_type is not None else None,
         duplicate_is_suspect=dup.is_duplicate_suspect if dup is not None else None,
         duplicate_matches=dup.duplicate_matches if dup is not None else [],
     )

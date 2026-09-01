@@ -17,7 +17,7 @@ class FrontImageResult(BaseModel):
     decision: Decision
     reason: str
     checked: bool
-    vehicle_type: Optional[str] = None
+    vehicle_type: Optional[str] = None  # detected -- "truck" | "bus" | "other"
     view: Optional[str] = None
     is_front: Optional[bool] = None
     front_complete: Optional[bool] = None
@@ -26,6 +26,8 @@ class FrontImageResult(BaseModel):
     ai_generated: Optional[bool] = None
     ai_confidence: Optional[float] = None
     confidence: Optional[float] = None
+    claimed_vehicle_type: Optional[str] = None  # "truck" | "bus", if given
+    vehicle_type_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE, only if claimed_vehicle_type given
     duplicate_is_suspect: Optional[bool] = None
     duplicate_matches: list[DuplicateMatchInfo] = []
     error: Optional[str] = None
@@ -235,15 +237,34 @@ class SideCompletenessResult(BaseModel):
     error: Optional[str] = None
 
 
+class SideVehicleTypeResult(BaseModel):
+    """Does the DETECTED vehicle category (truck vs bus, from the same YOLO
+    detector already used for the completeness/identity crop) agree with a
+    CLAIMED category? Opt-in — only runs when ``claimed_vehicle_type`` is given
+    to ``check_side_image_upload``, since not every caller has that claim handy.
+    The detector is an off-the-shelf COCO model (see ``backends/vehicle.py``),
+    not fine-tuned for Indian trucks/buses — a mismatch is flagged for a human,
+    never a solo REJECT. See
+    ``side_image/side_image_check.py::check_side_vehicle_type``."""
+    decision: Decision
+    status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE
+    checked: bool
+    claimed_vehicle_type: Optional[str] = None  # "truck" | "bus"
+    detected_vehicle_type: Optional[str] = None  # "truck" | "bus" | None
+    reason: str
+    error: Optional[str] = None
+
+
 class SideImageCheckResult(BaseModel):
     """Side/axle-image validator — axle count (Claude judgment call, no dedicated
     detector wired) + identity-to-claimed-vehicle, routed by
     ``SideImageTypeClassifier`` into three buckets of DECREASING reliability
     (vrn_visible > corner_view > pure_side_profile — the last is NEVER a confident
     PASS on its own, see ``side_image/side_image_check.py``) + framing
-    completeness (``SideCompletenessResult``). Overall ``decision`` is the worst
-    of axle / identity / completeness / duplicate, same REJECT > MANUAL_REVIEW >
-    PASS ordering as ``CombinedResult``."""
+    completeness (``SideCompletenessResult``) + an opt-in vehicle-category check
+    (``SideVehicleTypeResult``). Overall ``decision`` is the worst of axle /
+    identity / completeness / vehicle-type / duplicate, same REJECT >
+    MANUAL_REVIEW > PASS ordering as ``CombinedResult``."""
     decision: Decision
     reason: str
     checked: bool
@@ -257,6 +278,9 @@ class SideImageCheckResult(BaseModel):
     identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
     identity_decision: Optional[str] = None
     completeness_score: Optional[float] = None  # 0..1, see SideCompletenessResult
+    claimed_vehicle_type: Optional[str] = None  # "truck" | "bus", if given
+    detected_vehicle_type: Optional[str] = None  # "truck" | "bus" | None, only if claimed_vehicle_type given
+    vehicle_type_status: Optional[str] = None  # MATCH | MISMATCH | UNREADABLE, only if claimed_vehicle_type given
     duplicate_is_suspect: Optional[bool] = None
     duplicate_matches: list[DuplicateMatchInfo] = []
     error: Optional[str] = None

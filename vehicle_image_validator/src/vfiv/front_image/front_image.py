@@ -18,6 +18,7 @@ dict's fields, not which backend produced them.
 from vfiv import config
 from vfiv.backends.gate import run_gate
 from vfiv.backends.image_io import load_rgb_array
+from vfiv.backends.vehicle import decide_vehicle_type_match
 from vfiv.schemas import FrontImageResult
 from vfiv.base import call_vlm_json
 
@@ -88,6 +89,7 @@ def decide_front_image(
     r: dict,
     conf_min: float = config.FRONT_CONF_MIN,
     ai_reject_conf: float = config.FRONT_AI_REJECT_CONF,
+    claimed_vehicle_type: str | None = None,
 ) -> FrontImageResult:
     """Pure decision logic over an already-classified dict (``r["checked"]`` must be
     True — see ``classify_front_image````classify_combined``). Split out from
@@ -97,6 +99,15 @@ def decide_front_image(
     PASS          genuine photo · truck/bus · clear, complete FRONT view · confident
     REJECT        fails a hard criterion (screenshot, confident AI, wrong vehicle/view, …)
     MANUAL_REVIEW needs a human (e.g. suspected AI-generated below the reject threshold)
+
+    ``claimed_vehicle_type`` ("truck" | "bus", case-insensitive) is optional — both
+    truck and bus VRNs get issued against this platform, so beyond the existing
+    "is this even a truck/bus" hard gate below, this also checks whether it's the
+    SPECIFIC one claimed (``backends.vehicle.decide_vehicle_type_match``). Only
+    runs once every other hard gate has already cleared, and only ever downgrades
+    an otherwise-PASS result to MANUAL_REVIEW — never a solo REJECT, since the
+    detector here is explicitly documented as weak on Indian trucks/buses (see
+    ``decide_vehicle_type_match``'s docstring).
     """
     detail = (f"{r['vehicle_type']} / {r['view']} "
               f"(front={r['is_front']}, complete={r.get('front_complete')}, "
@@ -104,8 +115,11 @@ def decide_front_image(
               f"ai={r.get('ai_generated')}"
               f"@{r.get('ai_confidence', 0):.0f}%, {r['confidence']:.0f}%) — {r['reason']}")
 
-    def result(decision: str, reason: str) -> FrontImageResult:
+    def result(decision: str, reason: str, **overrides) -> FrontImageResult:
         extra = {k: v for k, v in r.items() if k != "reason"}
+        if claimed_vehicle_type:
+            extra["claimed_vehicle_type"] = claimed_vehicle_type.strip().lower()
+        extra.update(overrides)
         return FrontImageResult(decision=decision, reason=reason, **extra)
 
     # Ordered checks -> first match wins.
@@ -126,6 +140,12 @@ def decide_front_image(
         return result("REJECT", f"front of the truck is incomplete / cut off  [{detail}]")
     if r["confidence"] < conf_min:
         return result("REJECT", f"low confidence ({r['confidence']:.0f}% < {conf_min:.0f}%)  [{detail}]")
+    if claimed_vehicle_type:
+        type_check = decide_vehicle_type_match(r["vehicle_type"], claimed_vehicle_type)
+        if type_check["decision"] != "PASS":
+            return result("MANUAL_REVIEW", f"{type_check['reason']}  [{detail}]",
+                          vehicle_type_status=type_check["status"])
+        return result("PASS", detail, vehicle_type_status=type_check["status"])
     return result("PASS", detail)
 
 
@@ -133,6 +153,7 @@ def validate_front_image(
     image,
     conf_min: float = config.FRONT_CONF_MIN,
     ai_reject_conf: float = config.FRONT_AI_REJECT_CONF,
+    claimed_vehicle_type: str | None = None,
 ) -> FrontImageResult:
     """Classify then decide (single-call path). See ``decide_front_image`` for the
     decision logic and ``classify_front_image`` for the VLM call."""
@@ -143,5 +164,6 @@ def validate_front_image(
             reason=f"front-image check unavailable ({r.get('error', '?')})",
             checked=False,
             error=r.get("error"),
+            claimed_vehicle_type=claimed_vehicle_type.strip().lower() if claimed_vehicle_type else None,
         )
-    return decide_front_image(r, conf_min, ai_reject_conf)
+    return decide_front_image(r, conf_min, ai_reject_conf, claimed_vehicle_type)

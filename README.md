@@ -48,8 +48,8 @@ with swappable backends for comparison.
 
 ```mermaid
 flowchart LR
-    IN["Front photo\n+ claimed VRN / Make / Model (optional)"] --> Q1
-    Q1{{"Q1 · Front Gate\nYOLOv8 vehicle detector\nSigLIP2 zero-shot pose\nClaude/Gemini: screenshot / AI-gen\n+ dup. check if claimed_vrn + upload_id given"}}
+    IN["Front photo\n+ claimed VRN / Make / Model /\nVehicle type (optional)"] --> Q1
+    Q1{{"Q1 · Front Gate\nYOLOv8 vehicle detector\nSigLIP2 zero-shot pose\nClaude/Gemini: screenshot / AI-gen\n+ dup. check if claimed_vrn + upload_id given\n+ truck-vs-bus check if vehicle type claimed"}}
     Q1 -- "not PASS — terminal" --> T0["carries Q1's own verdict directly:\nREJECT (screenshot/AI-gen/wrong view)\nor MANUAL_REVIEW"]
     Q1 -- PASS --> Q2["Q2 · VRN + Colour\nAWS Rekognition (text detect)\ntruck_extract_match plate parser\nHSV pixel colour classifier"]
     Q1 -- PASS --> Q3["Q3 · Make + Model\nSigLIP zero-shot (make)\nRekognition brand-text (make)\nClaude/Gemini (model, if claimed)"]
@@ -76,15 +76,16 @@ of the two is more severe.
 |---|---|---|---|
 | Q1 · Front Gate | `front_image/front_image.py` | YOLOv8, SigLIP2, Claude/Gemini | Real vehicle? Front view? Complete? Confident enough? Not a screenshot, re-photographed print, or AI-generated image. |
 | Duplicate (opt-in) | `duplicate_check.py` | SigLIP embed, pgvector | Is this image a near-duplicate of a PRIOR upload filed under a different VRN? Folded into Q1's own decision, worst-of. |
+| Vehicle type (opt-in) | `backends/vehicle.py::decide_vehicle_type_match` | YOLOv8 (same detection) | Does the detected category (truck vs bus) match a CLAIMED one? Reuses Q1's own detection — no extra model call. Folded into Q1's decision, worst-of. |
 | Q2 · VRN + Colour | `front_image/vrn_check.py` | AWS Rekognition, `truck_extract_match`, HSV classifier | Does the read plate number match the claimed VRN (confusable-character tolerant)? What colour is the plate? |
 | Q3 · Make + Model | `front_image/make_model_check.py` | SigLIP zero-shot, Rekognition text, Claude/Gemini | Does either real-model source agree the make matches? If a model designation was claimed and read confidently, does it fuzzy-match? |
 
 **Verdict formula — Front Image**
 
-- 🔴 **REJECT** — Q1: screenshot, re-photographed print, AI-gen ≥ `85%`, wrong vehicle/view, incomplete front, or confidence < `60%` — any one is terminal.
+- 🔴 **REJECT** — Q1: screenshot, re-photographed print, AI-gen ≥ `85%`, wrong vehicle/view (not truck/bus at all), incomplete front, or confidence < `60%` — any one is terminal.
 - 🔴 **REJECT** — Q1 PASSes, then Q2 plate mismatch, OR Q3 make mismatch on *both* sources, OR claimed model read confidently and mismatched.
-- 🟡 **MANUAL_REVIEW** — Q1: AI-gen suspected but confidence < `85%`. Or Q2 plate unreadable. Or Q3 claimed model read but `UNREADABLE`.
-- 🟢 **PASS** — Q1 clears, and both Q2 and Q3 independently resolve to PASS. `overall = max(Q2, Q3, key=severity)`
+- 🟡 **MANUAL_REVIEW** — Q1: AI-gen suspected but confidence < `85%`. Or a vehicle type was claimed and the detected category (truck/bus) disagrees, or nothing was detected to compare. Or Q2 plate unreadable. Or Q3 claimed model read but `UNREADABLE`.
+- 🟢 **PASS** — Q1 clears (including the vehicle-type check, if a type was claimed), and both Q2 and Q3 independently resolve to PASS. `overall = max(Q2, Q3, key=severity)`
 
 ---
 
@@ -92,25 +93,29 @@ of the two is more severe.
 
 Not called from any production entry point yet — lives in
 `side_image/side_image_check.py::check_side_image_upload`, exercised through
-the webapp's End-to-end tab. Four independent checks, worst-of combined;
-completeness and axle/identity always run, duplicate is opt-in via `upload_id`.
+the webapp's End-to-end tab. Five independent checks, worst-of combined;
+completeness and axle/identity always run, duplicate and vehicle type are
+opt-in via `upload_id`/`claimed_vehicle_type` respectively.
 
 ```mermaid
 flowchart LR
-    IN2["Side/axle photo\n+ claimed VRN / Make / AxleCount\n+ front reference image"] --> COMPLETE
+    IN2["Side/axle photo\n+ claimed VRN / Make / AxleCount /\nVehicle type (optional)\n+ front reference image"] --> COMPLETE
     IN2 --> DUP
     IN2 --> AXLE
     IN2 --> IDENT
+    IN2 --> VTYPE
 
     COMPLETE["Completeness\nYOLO bbox vs. frame edge\n(reuses Q1's own gate.completeness_score)\nis the truck cut off at an edge?\nlenient vs. Q1 -- long trucks legitimately crop"]
     DUP["Duplicate · optional\nSigLIP embed → pgvector\nimage_type=\"side\"\nruns only if upload_id given\nnever REJECTs on its own"]
     AXLE["Axle Count\nClaude/Gemini VLM\nwheelbase walk-through, 2-7 axles\nvs claimed count, conf ≥ 70%\n+ RC consistency (if axle_source given)\nauto → trusted / manual → vs vehicle_mapper"]
     IDENT["Identity Binding\nClaude/Gemini → bucket\nroutes on windshield/plate visibility\nvrn_visible → reuse Q2 logic\ncorner_view → embed + colour-hist\npure_side_profile → colour-hist only\n(decreasing reliability, top to bottom)"]
+    VTYPE["Vehicle Type · optional\nsame YOLO detection as Completeness\ntruck vs bus vs claimed category\nruns only if vehicle type claimed\nnever REJECTs on its own"]
 
-    COMPLETE --> COMB2["Overall = max(completeness, dup, axle, identity) by severity"]
+    COMPLETE --> COMB2["Overall = max(completeness, dup, axle,\nidentity, vehicle type) by severity"]
     DUP --> COMB2
     AXLE --> COMB2
     IDENT --> COMB2
+    VTYPE --> COMB2
     COMB2 --> P2[PASS]
     COMB2 --> M2[MANUAL_REVIEW]
     COMB2 --> R2[REJECT]
@@ -123,13 +128,17 @@ flowchart LR
     class R2 reject
 ```
 
-Unlike Front Image, none of these four checks gate each other — all run
-(duplicate only if `upload_id` is given) and the worst result wins. The
+Unlike Front Image, none of these five checks gate each other — all run
+(duplicate only if `upload_id` is given, vehicle type only if
+`claimed_vehicle_type` is given) and the worst result wins. The
 identity-binding bucket only ever reaches PASS through `corner_view`; the
-other two buckets are deliberately capped below it, and completeness is
-capped below it too — it's the same real bbox-vs-edge heuristic Q1 uses, but
+other two buckets are deliberately capped below it, and completeness and
+vehicle type are capped below it too — both reuse the same real YOLO
+detection Q1 uses, but neither can REJECT on its own here: completeness is
 UNCALIBRATED for this framing (a long truck legitimately runs off-frame more
-than a compact front-on shot), so unlike Q1 it can never REJECT on its own.
+than a compact front-on shot), and the detector is an off-the-shelf COCO
+model not fine-tuned for Indian trucks/buses, so a truck-vs-bus mismatch is a
+lead for a human, not grounds to auto-reject.
 
 | Station | Script | Tech | What it decides |
 |---|---|---|---|
@@ -140,13 +149,14 @@ than a compact front-on shot), so unlike Q1 it can never REJECT on its own.
 | Bucket routing | `classify_side_image_type` | Claude/Gemini VLM | Is a plate legible? Is the windshield visible (a forward-facing angle) or edge-on (a true side profile)? |
 | `corner_view` identity | `_identity_via_corner_view` | SigLIP embed, RGB histogram | 1:1 embedding similarity AND colour-histogram vs. this truck's own on-file front photo — both against a vehicle-only crop. |
 | `pure_side_profile` identity | `_identity_via_pure_side_profile` | RGB histogram | Colour-histogram only (angle-invariant) vs. the front reference — no plate, no grille, nothing else to check. |
+| Vehicle type (opt-in) | `check_side_vehicle_type` | YOLOv8 (same detection as Completeness) | Does the detected category (truck vs bus) match a CLAIMED one? Shares `backends/vehicle.py::decide_vehicle_type_match` with Q1. |
 
 **Verdict formula — Side / Axle Image**
 
 - 🔴 **REJECT** — Axle count mismatch (confidence ≥ `70%`), OR manually-entered count disagrees with the RC-derived `vehicle_mapper` table.
 - 🔴 **REJECT** — `vrn_visible` bucket only: plate read, but doesn't match the claim.
-- 🟡 **MANUAL_REVIEW** — Axle read confidence < `70%`. Or completeness score < `0.5` (truck bbox touches a frame edge). Or duplicate flags a near-identical prior upload under a different VRN. Or `corner_view`'s embed < `0.97` or colour-hist < `0.80` (either alone). Or `pure_side_profile`, always — match or mismatch. Or no front reference photo at all.
-- 🟢 **PASS** — Completeness clears (a truck was detected AND its bbox score ≥ `0.5`), axle matches (+ RC-consistent), AND identity resolves PASS — only reachable via `vrn_visible` match or `corner_view` clearing BOTH thresholds.
+- 🟡 **MANUAL_REVIEW** — Axle read confidence < `70%`. Or completeness score < `0.5` (truck bbox touches a frame edge). Or a vehicle type was claimed and the detected category disagrees, or nothing was detected to compare. Or duplicate flags a near-identical prior upload under a different VRN. Or `corner_view`'s embed < `0.97` or colour-hist < `0.80` (either alone). Or `pure_side_profile`, always — match or mismatch. Or no front reference photo at all.
+- 🟢 **PASS** — Completeness clears (a truck was detected AND its bbox score ≥ `0.5`), the vehicle-type check clears if one was claimed, axle matches (+ RC-consistent), AND identity resolves PASS — only reachable via `vrn_visible` match or `corner_view` clearing BOTH thresholds.
 
 ---
 
@@ -226,5 +236,5 @@ REJECT (severity 2)  >  MANUAL_REVIEW (severity 1)  >  PASS (severity 0)
 ```
 
 - **Gating vs. worst-of.** Front Image is the exception: Q1 *gates* Q2/Q3 (a non-PASS skips them outright). Side/Axle and FASTag never gate their own sub-checks — everything that can run, does, and the worst result wins.
-- **REJECT is never automatic on a soft signal.** Every embedding-similarity or colour-histogram threshold in this manual is explicitly uncalibrated. None of them can independently REJECT — a failure there tops out at MANUAL_REVIEW, by design.
+- **REJECT is never automatic on a soft signal.** Every embedding-similarity or colour-histogram threshold in this manual is explicitly uncalibrated, and the off-the-shelf COCO vehicle detector (framing completeness, truck-vs-bus category) is documented as weak on Indian trucks/buses. None of these can independently REJECT — a failure there tops out at MANUAL_REVIEW, by design.
 - **A bad photo is never proof of fraud.** Nothing readable, at any station, across all three image types, resolves to MANUAL_REVIEW — never REJECT. REJECT is reserved for a legible signal that actively disagrees.

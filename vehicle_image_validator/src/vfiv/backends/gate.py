@@ -49,9 +49,12 @@ def run_gate(image: np.ndarray) -> dict:
     """Real CV portion of Q1: vehicle_type/view/is_front/front_complete/confidence.
 
     Returns a dict shaped for ``front_image.decide_front_image`` (merged with the
-    narrowed Claude judgment-call fields upstream). ``vehicle_type`` is "truck" if
-    a truck/bus was detected above threshold, else "other" (car/nothing detected —
-    this backend can't distinguish car-vs-nothing, only truck/bus-vs-not).
+    narrowed Claude judgment-call fields upstream). ``vehicle_type`` is the matched
+    detector class ("truck" or "bus") if one was detected above threshold, else
+    "other" (car/nothing detected — this backend can't distinguish car-vs-nothing,
+    only truck/bus-vs-not; see ``Detection.cls_name`` and ``decide_vehicle_type_match``
+    in ``backends/vehicle.py`` for the claimed-vs-detected truck/bus comparison this
+    feeds).
     """
     det: Detection | None = get_vehicle_detector().best_truck(image)
     truck_conf = det.conf if det is not None else 0.0
@@ -73,7 +76,7 @@ def run_gate(image: np.ndarray) -> dict:
     front_complete = conf >= config.GATE_ACCEPT_MIN and is_front
 
     return {
-        "vehicle_type": "truck", "view": ("front" if view == "front34" else view),
+        "vehicle_type": det.cls_name, "view": ("front" if view == "front34" else view),
         "is_front": is_front, "front_complete": front_complete,
         "confidence": round(conf * 100.0, 1),
         "gate_reason": None if front_complete else (

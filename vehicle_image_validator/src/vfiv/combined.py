@@ -30,6 +30,7 @@ def validate_upload(
     claimed_vrn: str,
     claimed_make: str,
     claimed_model: str | None = None,
+    claimed_vehicle_type: str | None = None,
     conf_min: float = config.FRONT_CONF_MIN,
     ai_reject_conf: float = config.FRONT_AI_REJECT_CONF,
     max_confusable_edits: int = config.VRN_MAX_CONFUSABLE_EDITS,
@@ -42,8 +43,11 @@ def validate_upload(
     alongside the image when invoking this module — where those values come from (a
     real platform integration vs. a manual test-input field) is outside this module's
     concern. ``claimed_model`` is optional, same as in ``validate_make_model``.
+    ``claimed_vehicle_type`` ("truck" | "bus") is also optional — both are issued
+    against this platform, so when given, Q1 also checks the detected category
+    against it (folded into Q1's own decision; see ``front_image.decide_front_image``).
     """
-    front = validate_front_image(image, conf_min, ai_reject_conf)
+    front = validate_front_image(image, conf_min, ai_reject_conf, claimed_vehicle_type)
     if front.decision != "PASS":
         return CombinedResult(decision=front.decision, reason=front.reason,
                               checked=front.checked, front=front, error=front.error)

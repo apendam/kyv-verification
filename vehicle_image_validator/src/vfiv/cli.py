@@ -42,6 +42,9 @@ def main() -> None:
     ap.add_argument("--bank-code", help="Claimed issuing-bank code from the QR payload "
                                          "(optional for --type fastag).")
     ap.add_argument("--axle-count", type=int, help="Claimed axle count (required for --type side).")
+    ap.add_argument("--vehicle-type", choices=["truck", "bus"],
+                     help="Claimed vehicle category (optional for --type front|combined|side — "
+                          "both truck and bus VRNs are issued against this platform).")
     ap.add_argument("--front-reference", help="Path to this truck's on-file front photo "
                                                "(optional for --type side, corner_view bucket only).")
     ap.add_argument("--backend", help="Model backend override — printed-digit OCR backend for "
@@ -50,7 +53,9 @@ def main() -> None:
                                        "Defaults to config.py's FASTAG_OCR_BACKEND/AXLE_COUNT_BACKEND.")
     args = ap.parse_args()
 
-    if args.type == "vrn":
+    if args.type == "front":
+        result = validate_front_image(args.image, claimed_vehicle_type=args.vehicle_type)
+    elif args.type == "vrn":
         if not args.vrn:
             ap.error("--vrn is required for --type vrn")
         result = validate_vrn(args.image, args.vrn)
@@ -61,7 +66,8 @@ def main() -> None:
     elif args.type == "combined":
         if not args.vrn or not args.make:
             ap.error("--vrn and --make are required for --type combined")
-        result = validate_upload(args.image, args.vrn, args.make, args.model_name)
+        result = validate_upload(args.image, args.vrn, args.make, args.model_name,
+                                  claimed_vehicle_type=args.vehicle_type)
     elif args.type == "duplicate":
         if not args.vrn:
             ap.error("--vrn is required for --type duplicate")
@@ -80,9 +86,7 @@ def main() -> None:
         side_kwargs = {"axle_backend": args.backend} if args.backend else {}
         result = check_side_image_upload(args.image, args.vrn, args.make, args.axle_count,
                                           upload_id=upload_id, front_reference_image=args.front_reference,
-                                          **side_kwargs)
-    else:
-        result = VALIDATORS[args.type](args.image)
+                                          claimed_vehicle_type=args.vehicle_type, **side_kwargs)
 
     print(json.dumps(result.model_dump(), indent=2))
     sys.exit(0 if result.decision == "PASS" else 1)
