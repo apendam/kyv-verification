@@ -108,7 +108,7 @@ flowchart LR
     COMPLETE["Completeness\nYOLO bbox vs. frame edge\n(reuses Q1's own gate.completeness_score)\nis the truck cut off at an edge?\nlenient vs. Q1 -- long trucks legitimately crop"]
     DUP["Duplicate · optional\nSigLIP embed → pgvector\nimage_type=\"side\"\nruns only if upload_id given\nnever REJECTs on its own"]
     AXLE["Axle Count\nClaude/Gemini VLM\nwheelbase walk-through, 2-7 axles\nvs claimed count, conf ≥ 70%\n+ RC consistency (if axle_source given)\nauto → trusted / manual → vs vehicle_mapper"]
-    IDENT["Identity Binding\nClaude/Gemini → bucket\nroutes on windshield/plate visibility\nvrn_visible → reuse Q2 logic\ncorner_view → embed + colour-hist\npure_side_profile → colour-hist only\n(decreasing reliability, top to bottom)"]
+    IDENT["Identity Binding\nClaude/Gemini → bucket\nroutes on windshield/plate visibility\nvrn_visible → reuse Q2 logic\ncorner_view → embed (whole vehicle) +\ncab-only colour-hist (window/cargo excluded)\npure_side_profile → cab-only colour-hist only\n(decreasing reliability, top to bottom)"]
     VTYPE["Vehicle Type · optional\nsame YOLO detection as Completeness\ntruck vs bus vs claimed category\nruns only if vehicle type claimed\nnever REJECTs on its own"]
 
     COMPLETE --> COMB2["Overall = max(completeness, dup, axle,\nidentity, vehicle type) by severity"]
@@ -146,16 +146,17 @@ lead for a human, not grounds to auto-reject.
 | Duplicate | `duplicate_check.py` | SigLIP embed, pgvector | Near-duplicate of a prior upload under a different VRN? `image_type="side"` — never compared against front/FASTag. |
 | Axle Count | `side_image/side_image_check.py` | Claude/Gemini VLM | Counts axle positions front-to-rear (dual wheels vs. tandem/tridem bogies), citing the specific visual evidence per axle — never a brand/model assumption. |
 | RC consistency | `decide_axle_source_consistency` | lookup table | Manually-entered axle count vs. the vehicle's own `vehicle_mapper` class (e.g. `VC12 → 4`). Auto-filled counts are trusted as-is. |
-| Bucket routing | `classify_side_image_type` | Claude/Gemini VLM | Is a plate legible? Is the windshield visible (a forward-facing angle) or edge-on (a true side profile)? |
-| `corner_view` identity | `_identity_via_corner_view` | SigLIP embed, RGB histogram | 1:1 embedding similarity AND colour-histogram vs. this truck's own on-file front photo — both against a vehicle-only crop. |
-| `pure_side_profile` identity | `_identity_via_pure_side_profile` | RGB histogram | Colour-histogram only (angle-invariant) vs. the front reference — no plate, no grille, nothing else to check. |
+| Bucket routing + cab-crop | `classify_side_image_type` | Claude/Gemini VLM | Is a plate legible? Is the windshield visible (a forward-facing angle) or edge-on (a true side profile)? Same call also locates the cab-only region (bumper/grille/hood/fenders, window and cargo box excluded) for the colour histogram below — no extra call. |
+| Reference cab-crop | `classify_front_reference_cab_crop` | Claude/Gemini VLM | Locates the same cab-only region in the on-file front reference photo — a separate call, since it's a different image. |
+| `corner_view` identity | `_identity_via_corner_view` | SigLIP embed, RGB histogram | 1:1 embedding similarity (whole-vehicle crop) AND colour-histogram (cab-only crop, from the two rows above) vs. this truck's own on-file front photo. |
+| `pure_side_profile` identity | `_identity_via_pure_side_profile` | RGB histogram | Cab-only colour-histogram only (angle-invariant) vs. the front reference — no plate, no grille, nothing else to check. |
 | Vehicle type (opt-in) | `check_side_vehicle_type` | YOLOv8 (same detection as Completeness) | Does the detected category (truck vs bus) match a CLAIMED one? Shares `backends/vehicle.py::decide_vehicle_type_match` with Q1. |
 
 **Verdict formula — Side / Axle Image**
 
 - 🔴 **REJECT** — Axle count mismatch (confidence ≥ `70%`), OR manually-entered count disagrees with the RC-derived `vehicle_mapper` table.
 - 🔴 **REJECT** — `vrn_visible` bucket only: plate read, but doesn't match the claim.
-- 🟡 **MANUAL_REVIEW** — Axle read confidence < `70%`. Or completeness score < `0.5` (truck bbox touches a frame edge). Or a vehicle type was claimed and the detected category disagrees, or nothing was detected to compare. Or duplicate flags a near-identical prior upload under a different VRN. Or `corner_view`'s embed < `0.97` or colour-hist < `0.80` (either alone). Or `pure_side_profile`, always — match or mismatch. Or no front reference photo at all.
+- 🟡 **MANUAL_REVIEW** — Axle read confidence < `70%`. Or completeness score < `0.5` (truck bbox touches a frame edge). Or a vehicle type was claimed and the detected category disagrees, or nothing was detected to compare. Or duplicate flags a near-identical prior upload under a different VRN. Or `corner_view`'s embed < `0.97` or cab-only colour-hist < `0.80` (either alone), or the cab region isn't confidently locatable in either photo. Or `pure_side_profile`, always — match or mismatch. Or no front reference photo at all.
 - 🟢 **PASS** — Completeness clears (a truck was detected AND its bbox score ≥ `0.5`), the vehicle-type check clears if one was claimed, axle matches (+ RC-consistent), AND identity resolves PASS — only reachable via `vrn_visible` match or `corner_view` clearing BOTH thresholds.
 
 ---

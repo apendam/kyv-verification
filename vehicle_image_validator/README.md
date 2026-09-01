@@ -618,8 +618,8 @@ credentials, etc.), same posture as every other VLM-backed check here.
 | Bucket | Strategy | Reliability |
 |---|---|---|
 | `vrn_visible` | Re-runs Q2's own VRN detector/matcher on this image, unchanged | Strong — exact identity |
-| `corner_view` | A SigLIP embedding similarity + a colour-histogram comparison, both against this truck's own on-file front photo | Uncalibrated — see caveat below |
-| `pure_side_profile` | Colour-histogram comparison only, against the same front reference photo | Weak by design — never a confident PASS alone |
+| `corner_view` | A SigLIP embedding similarity (whole-vehicle crop) + a cab-only colour-histogram comparison, both against this truck's own on-file front photo | Uncalibrated — see caveat below |
+| `pure_side_profile` | Cab-only colour-histogram comparison only, against the same front reference photo | Weak by design — never a confident PASS alone |
 
 **No make/model check anywhere in this module any more** — it used to run in both
 `corner_view` and `pure_side_profile`, and was dropped from both: `MakeClassifier`
@@ -633,13 +633,14 @@ mismatch behaviour meant a genuine truck could get auto-rejected on what amounts
 to a coin-flip brand read.
 
 `corner_view` relies on two direct 1:1 comparisons against `front_reference_image`
-instead — a SigLIP embedding similarity and a colour histogram (see below);
-`pure_side_profile` relies on the colour-histogram comparison alone (no embedding
-check there — SigLIP's embedding is angle-sensitive, so a side profile vs. a
-front-on photo would likely score low even for the same truck; colour is roughly
-angle-invariant and is the one signal that transfers). Without a
-`front_reference_image` to compare against, both buckets are `MANUAL_REVIEW`
-("unverifiable") — no fallback to the make classifier.
+instead — a SigLIP embedding similarity (whole-vehicle crop) and a cab-only
+colour histogram (see below); `pure_side_profile` relies on the cab-only
+colour-histogram comparison alone (no embedding check there — SigLIP's embedding
+is angle-sensitive, so a side profile vs. a front-on photo would likely score
+low even for the same truck; colour is roughly angle-invariant and is the one
+signal that transfers). Without a `front_reference_image` to compare against,
+both buckets are `MANUAL_REVIEW` ("unverifiable") — no fallback to the make
+classifier.
 
 The `corner_view` embedding-similarity check is a **direct 1:1 comparison**
 (`front_reference_image` vs. this crop), not a vector-DB search — and it is
@@ -652,21 +653,50 @@ signals, this matters more than it used to.
 
 **Colour-histogram check** (`_color_histogram_similarity`, `config.SIDE_IMAGE_COLOR_HIST_MIN`,
 default `0.8`) — a real, deterministic paint-colour comparison, no ML judgment
-call involved: an RGB histogram correlation between the side photo's vehicle crop
-and the front reference's vehicle crop. Both crops come from the same vehicle
-detector already used elsewhere in this module (`get_vehicle_detector().best_truck()`)
-— **never the raw uncropped photo**, since background/road/sky colour would
-otherwise swamp the actual paint-colour signal. In `corner_view`, folded in
-alongside the embedding-similarity check (either one failing is `MANUAL_REVIEW`,
-never `REJECT` on its own); in `pure_side_profile`, it's the only signal —
-capped at `MANUAL_REVIEW` even on a perfect match (individual-vehicle identity
-still isn't solved — two different trucks of the same colour would pass this
-too), and (unlike the make classifier it replaced) also `MANUAL_REVIEW` rather
-than `REJECT` on a mismatch, same uncalibrated-threshold posture as `corner_view`.
-Also **uncalibrated** in general: lighting/exposure can differ meaningfully
-between two photos of the same truck shot at different times, so validate
-`config.SIDE_IMAGE_COLOR_HIST_MIN` against real same-truck/different-truck pairs
-before trusting it, same caveat as the embedding-similarity threshold.
+call involved for the comparison itself: an RGB histogram correlation between two
+crops. In `corner_view`, folded in alongside the embedding-similarity check
+(either one failing is `MANUAL_REVIEW`, never `REJECT` on its own); in
+`pure_side_profile`, it's the only signal — capped at `MANUAL_REVIEW` even on a
+perfect match (individual-vehicle identity still isn't solved — two different
+trucks of the same colour would pass this too), and (unlike the make classifier
+it replaced) also `MANUAL_REVIEW` rather than `REJECT` on a mismatch, same
+uncalibrated-threshold posture as `corner_view`. Also **uncalibrated** in
+general: lighting/exposure can differ meaningfully between two photos of the
+same truck shot at different times, so validate `config.SIDE_IMAGE_COLOR_HIST_MIN`
+against real same-truck/different-truck pairs before trusting it, same caveat
+as the embedding-similarity threshold.
+
+**CAB-ONLY crop, not whole-vehicle** (`_cab_crop`, `_cab_color_similarity`) — the
+two crops fed into the histogram are NOT the same whole-vehicle crop the
+embedding-similarity check uses (`get_vehicle_detector().best_truck()`). They're
+a narrower region covering just the front bumper/grille/hood/fenders, with the
+windshield/window glass EXCLUDED (dark/reflective, would distort a paint
+reading) and, for the side/corner photo, the cargo box/tipper/tanker/trailer
+EXCLUDED too. This exists because the cargo body is what actually gets swapped
+or repainted on this platform's vehicles far more often than the cab — a
+whole-vehicle histogram would let a changed cargo body corrupt the comparison
+either way (flag a genuine same-cab match as a mismatch, or let a different
+truck's histogram happen to average out to a match). The crop region comes from
+a VLM read rather than a fixed fraction of the vehicle bbox: cab length varies a
+lot with overall truck length (a 2-axle rigid vs. a 7-axle multi-axle truck), so
+a fixed proportion would either clip the cab short or bleed into the cargo box
+depending on the specific truck.
+- For the side/corner photo, this is a **free extension** of the existing
+  `classify_side_image_type` bucket-routing call (`SIDE_IMAGE_TYPE_PROMPT`) — it
+  already looks at this exact photo to judge windshield/plate visibility, so it
+  now also reports `cab_crop_visible`/`cab_x_start`/`cab_x_end`/`cab_y_start`/
+  `cab_y_end` (fractions of the full photo) in the same response, no extra call.
+- For `front_reference_image`, it's a **new, separate VLM call**
+  (`classify_front_reference_cab_crop`, `FRONT_REFERENCE_CAB_CROP_PROMPT`) — a
+  different photo the bucket-routing call never sees. This is the one real added
+  cost of this feature: one more Claude/Gemini call, made only when a
+  `corner_view`/`pure_side_profile` bucket with a reference photo actually
+  attempts the histogram.
+- If either photo's cab region isn't confidently locatable (obstructed, too far/
+  blurry, wrong angle), the histogram step is simply **unavailable**
+  (`color_hist_similarity` stays `None`, folded into `MANUAL_REVIEW`) — it never
+  silently falls back to the old whole-vehicle crop, which would reintroduce the
+  exact cargo-box-contamination problem this exists to avoid.
 
 The `pure_side_profile` bucket remains the genuinely open problem flagged in
 design discussion, not solved here — a bare side profile has nothing but colour

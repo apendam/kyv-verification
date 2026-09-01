@@ -3,6 +3,8 @@ import pytest
 
 from vfiv.backends.vehicle import Detection
 from vfiv.side_image.side_image_check import (
+    _cab_color_similarity,
+    _cab_crop,
     _color_histogram_similarity,
     _worst_decision,
     check_axle_count,
@@ -10,6 +12,7 @@ from vfiv.side_image.side_image_check import (
     check_side_identity,
     check_side_vehicle_type,
     classify_axle_count,
+    classify_front_reference_cab_crop,
     decide_axle_count,
     decide_axle_source_consistency,
 )
@@ -141,10 +144,18 @@ def test_check_side_identity_degrades_on_unrecognized_bucket(monkeypatch):
     assert result.checked is False
 
 
+_FAKE_CAB_CROP = {"cab_crop_visible": True, "cab_x_start": 0.1, "cab_x_end": 0.4,
+                  "cab_y_start": 0.3, "cab_y_end": 0.9}
+
+
 def _stub_corner_view_deps(monkeypatch, similarity: float, color_similarity: float = 1.0):
     """Wires just enough of corner_view's dependency chain (detector + embeddings +
-    colour histogram) to exercise _identity_via_corner_view for real -- no make
-    classifier stubbing needed any more since neither bucket imports it at all."""
+    cab-crop location + colour histogram) to exercise _identity_via_corner_view for
+    real -- no make classifier stubbing needed any more since neither bucket
+    imports it at all. Cab-crop plumbing (``_cab_crop``,
+    ``classify_front_reference_cab_crop``) is stubbed directly rather than
+    exercised for real -- that's ``_cab_color_similarity``/``_cab_crop``'s own
+    tests' job."""
     import vfiv.side_image.side_image_check as side_module
 
     monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
@@ -161,6 +172,9 @@ def _stub_corner_view_deps(monkeypatch, similarity: float, color_similarity: flo
 
     monkeypatch.setattr(side_module, "get_siglip_model", lambda: _FakeSiglip())
     monkeypatch.setattr(side_module, "_cosine", lambda a, b: similarity)
+    monkeypatch.setattr(side_module, "_cab_crop", lambda image, cab_crop: "fake-cab-crop")
+    monkeypatch.setattr(side_module, "classify_front_reference_cab_crop",
+                        lambda image, backend=None, model=None: dict(_FAKE_CAB_CROP, checked=True))
     monkeypatch.setattr(side_module, "_color_histogram_similarity", lambda a, b: color_similarity)
 
 
@@ -191,7 +205,8 @@ def test_corner_view_passes_on_high_front_similarity(monkeypatch):
     _stub_corner_view_deps(monkeypatch, similarity=0.99)
 
     decision, reason, detail = side_module._identity_via_corner_view(
-        "does-not-matter.jpg", front_reference_image="fake-front.jpg", similarity_min=0.9)
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg",
+        side_cab_crop=_FAKE_CAB_CROP, similarity_min=0.9)
     assert decision == "PASS"
     assert detail["front_similarity"] == 0.99
 
@@ -202,21 +217,37 @@ def test_corner_view_manual_review_on_low_front_similarity(monkeypatch):
     _stub_corner_view_deps(monkeypatch, similarity=0.5)
 
     decision, reason, detail = side_module._identity_via_corner_view(
-        "does-not-matter.jpg", front_reference_image="fake-front.jpg", similarity_min=0.9)
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg",
+        side_cab_crop=_FAKE_CAB_CROP, similarity_min=0.9)
     assert decision == "MANUAL_REVIEW"
     assert "uncalibrated signal" in reason
+
+
+def test_corner_view_manual_review_when_cab_region_not_locatable(monkeypatch):
+    """High embedding similarity alone isn't enough -- if the cab-only region
+    can't be confidently located in either photo, the colour signal is simply
+    unavailable (not silently skipped/defaulted), so the overall bucket still
+    can't reach a confident PASS."""
+    import vfiv.side_image.side_image_check as side_module
+
+    _stub_corner_view_deps(monkeypatch, similarity=0.99)
+    monkeypatch.setattr(side_module, "_cab_crop", lambda image, cab_crop: None)
+
+    decision, reason, detail = side_module._identity_via_corner_view(
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg",
+        side_cab_crop={"cab_crop_visible": False}, similarity_min=0.9)
+    assert decision == "MANUAL_REVIEW"
+    assert detail["color_hist_similarity"] is None
+    assert "cab-only colour comparison unavailable" in reason
 
 
 def _stub_pure_side_profile_deps(monkeypatch, color_similarity: float):
     import vfiv.side_image.side_image_check as side_module
 
     monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
-
-    class _FakeDetector:
-        def best_truck(self, arr):
-            return None
-
-    monkeypatch.setattr(side_module, "get_vehicle_detector", lambda: _FakeDetector())
+    monkeypatch.setattr(side_module, "_cab_crop", lambda image, cab_crop: "fake-cab-crop")
+    monkeypatch.setattr(side_module, "classify_front_reference_cab_crop",
+                        lambda image, backend=None, model=None: dict(_FAKE_CAB_CROP, checked=True))
     monkeypatch.setattr(side_module, "_color_histogram_similarity", lambda a, b: color_similarity)
 
 
@@ -250,7 +281,8 @@ def test_pure_side_profile_never_passes_even_on_perfect_color_match(monkeypatch)
     _stub_pure_side_profile_deps(monkeypatch, color_similarity=1.0)
 
     decision, reason, detail = side_module._identity_via_pure_side_profile(
-        "does-not-matter.jpg", front_reference_image="fake-front.jpg", color_hist_min=0.8)
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg",
+        side_cab_crop=_FAKE_CAB_CROP, color_hist_min=0.8)
     assert decision == "MANUAL_REVIEW"
     assert detail["color_hist_similarity"] == 1.0
 
@@ -264,9 +296,27 @@ def test_pure_side_profile_color_mismatch_is_manual_review_not_reject(monkeypatc
     _stub_pure_side_profile_deps(monkeypatch, color_similarity=0.1)
 
     decision, reason, detail = side_module._identity_via_pure_side_profile(
-        "does-not-matter.jpg", front_reference_image="fake-front.jpg", color_hist_min=0.8)
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg",
+        side_cab_crop=_FAKE_CAB_CROP, color_hist_min=0.8)
     assert decision == "MANUAL_REVIEW"
     assert "possible mismatch" in reason
+
+
+def test_pure_side_profile_manual_review_when_cab_region_not_locatable(monkeypatch):
+    """No plate, no windshield, and now no locatable cab region either -- there's
+    genuinely nothing left to compare, so this must degrade to MANUAL_REVIEW with
+    a clear reason rather than silently falling back to a whole-vehicle crop."""
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
+    monkeypatch.setattr(side_module, "_cab_crop", lambda image, cab_crop: None)
+
+    decision, reason, detail = side_module._identity_via_pure_side_profile(
+        "does-not-matter.jpg", front_reference_image="fake-front.jpg",
+        side_cab_crop={"cab_crop_visible": False}, color_hist_min=0.8)
+    assert decision == "MANUAL_REVIEW"
+    assert detail["color_hist_similarity"] is None
+    assert "cab-only colour comparison unavailable" in reason
 
 
 def test_check_side_identity_routes_corner_view_without_claimed_make_dependency(monkeypatch):
@@ -280,7 +330,8 @@ def test_check_side_identity_routes_corner_view_without_claimed_make_dependency(
 
     seen = {}
 
-    def _fake_corner_view(image, front_reference_image, similarity_min=None, color_hist_min=None):
+    def _fake_corner_view(image, front_reference_image, side_cab_crop=None, similarity_min=None,
+                          color_hist_min=None, cab_crop_backend=None, cab_crop_model=None):
         seen["called"] = True
         return "PASS", "[corner_view] front-similarity 0.99", {"bucket": "corner_view", "front_similarity": 0.99}
 
@@ -508,3 +559,100 @@ def test_check_side_vehicle_type_degrades_on_exception(monkeypatch):
     assert result.decision == "MANUAL_REVIEW"
     assert result.checked is False
     assert "corrupt image file" in result.reason
+
+
+# --- Cab-only crop (colour histogram excludes window + cargo box) -------------------
+
+def test_cab_crop_not_visible_returns_none():
+    assert _cab_crop("does-not-matter.jpg", {"cab_crop_visible": False}) is None
+
+
+def test_cab_crop_missing_returns_none():
+    assert _cab_crop("does-not-matter.jpg", None) is None
+
+
+def test_cab_crop_missing_fraction_field_returns_none():
+    assert _cab_crop("does-not-matter.jpg", {"cab_crop_visible": True, "cab_x_start": 0.1}) is None
+
+
+def test_cab_crop_out_of_order_fractions_returns_none():
+    """x_start >= x_end (or y_start >= y_end) doesn't describe a real box --
+    degrade rather than crash on a malformed VLM read."""
+    bad = {"cab_crop_visible": True, "cab_x_start": 0.6, "cab_x_end": 0.2,
+           "cab_y_start": 0.3, "cab_y_end": 0.9}
+    assert _cab_crop("does-not-matter.jpg", bad) is None
+
+
+def test_cab_crop_slices_the_expected_region(monkeypatch):
+    import vfiv.side_image.side_image_check as side_module
+
+    arr = np.arange(100 * 200 * 3, dtype=np.uint8).reshape(100, 200, 3)  # H=100, W=200
+    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: arr)
+
+    cab_crop = {"cab_crop_visible": True, "cab_x_start": 0.0, "cab_x_end": 0.25,
+                "cab_y_start": 0.5, "cab_y_end": 1.0}
+    crop = _cab_crop("does-not-matter.jpg", cab_crop)
+    assert crop is not None
+    assert crop.shape == (50, 50, 3)  # rows 50:100, cols 0:50
+    assert np.array_equal(crop, arr[50:100, 0:50])
+
+
+# --- Cab-only colour similarity (side cab-crop + a fresh front-reference read) ------
+
+def test_cab_color_similarity_returns_none_when_side_cab_not_visible():
+    similarity, failure = _cab_color_similarity(
+        "does-not-matter.jpg", "fake-front.jpg", {"cab_crop_visible": False},
+        cab_crop_backend="claude", cab_crop_model=None)
+    assert similarity is None
+    assert "side/corner photo" in failure
+
+
+def test_cab_color_similarity_returns_none_when_reference_read_unavailable(monkeypatch):
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "_cab_crop", lambda image, cab_crop: "fake-cab-crop")
+    monkeypatch.setattr(side_module, "classify_front_reference_cab_crop",
+                        lambda image, backend=None, model=None: {"checked": False, "error": "no ANTHROPIC_API_KEY"})
+
+    similarity, failure = _cab_color_similarity(
+        "does-not-matter.jpg", "fake-front.jpg", _FAKE_CAB_CROP,
+        cab_crop_backend="claude", cab_crop_model=None)
+    assert similarity is None
+    assert "no ANTHROPIC_API_KEY" in failure
+
+
+def test_cab_color_similarity_returns_none_when_reference_cab_not_visible(monkeypatch):
+    import vfiv.side_image.side_image_check as side_module
+
+    def _side_cab(image, cab_crop):
+        return "fake-cab-crop" if cab_crop.get("cab_crop_visible") else None
+
+    monkeypatch.setattr(side_module, "_cab_crop", _side_cab)
+    monkeypatch.setattr(side_module, "classify_front_reference_cab_crop",
+                        lambda image, backend=None, model=None: {"checked": True, "cab_crop_visible": False})
+
+    similarity, failure = _cab_color_similarity(
+        "does-not-matter.jpg", "fake-front.jpg", _FAKE_CAB_CROP,
+        cab_crop_backend="claude", cab_crop_model=None)
+    assert similarity is None
+    assert "reference photo" in failure
+
+
+def test_cab_color_similarity_computes_histogram_when_both_cabs_located(monkeypatch):
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "_cab_crop", lambda image, cab_crop: "fake-cab-crop")
+    monkeypatch.setattr(side_module, "classify_front_reference_cab_crop",
+                        lambda image, backend=None, model=None: dict(_FAKE_CAB_CROP, checked=True))
+    monkeypatch.setattr(side_module, "_color_histogram_similarity", lambda a, b: 0.87)
+
+    similarity, failure = _cab_color_similarity(
+        "does-not-matter.jpg", "fake-front.jpg", _FAKE_CAB_CROP,
+        cab_crop_backend="claude", cab_crop_model=None)
+    assert similarity == 0.87
+    assert failure is None
+
+
+def test_unknown_front_reference_cab_crop_backend_raises_before_any_image_io():
+    with pytest.raises(ValueError, match="unknown side-image-type backend"):
+        classify_front_reference_cab_crop("does-not-exist.jpg", backend="not-a-real-backend")

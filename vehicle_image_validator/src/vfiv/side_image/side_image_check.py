@@ -51,13 +51,14 @@ code, same reasoning applies here):
      a. vrn_visible       -> re-run Q2's own VRN detector/matcher on this image
                              (strongest — exact identity, reuses ``vrn_check.py``
                              as-is, no new logic).
-     b. corner_view       -> a SigLIP embedding cosine-similarity AND a colour-
-                             histogram comparison, both against the claimed
-                             truck's OWN on-file front photo — direct 1:1
-                             pairwise compares, NOT a vector-DB nearest-neighbor
-                             search. Without a ``front_reference_image`` there's
-                             simply nothing to compare against, so this bucket
-                             is MANUAL_REVIEW ("unverifiable"). Both signals are
+     b. corner_view       -> a SigLIP embedding cosine-similarity (WHOLE-vehicle
+                             crop) AND a colour-histogram comparison (CAB-ONLY
+                             crop — see below), both against the claimed truck's
+                             OWN on-file front photo — direct 1:1 pairwise
+                             compares, NOT a vector-DB nearest-neighbor search.
+                             Without a ``front_reference_image`` there's simply
+                             nothing to compare against, so this bucket is
+                             MANUAL_REVIEW ("unverifiable"). Both signals are
                              UNCALIBRATED (see ``config.SIDE_IMAGE_SIMILARITY_MIN``/
                              ``SIDE_IMAGE_COLOR_HIST_MIN``) — a general SigLIP
                              embedding is trained for semantic similarity, not
@@ -68,27 +69,45 @@ code, same reasoning applies here):
                              photos of the same truck. Validate both against
                              real labeled pairs before trusting them in
                              production.
-     c. pure_side_profile  -> colour-histogram ONLY, against the same front
-                             reference photo — no embedding-similarity check
-                             here (SigLIP's embedding is angle-sensitive, so a
-                             side profile vs. a front-on photo would likely
-                             score low even for the same truck; colour is
-                             roughly angle-invariant and is the one corner_view
-                             signal that actually transfers). Without a
-                             ``front_reference_image``, also MANUAL_REVIEW
-                             ("unverifiable") — there's nothing else to go on
-                             for a bare side profile (no plate, no front
-                             grille). The individual-vehicle question is NOT
-                             solved here either way — this is the genuinely
-                             open piece flagged in the design discussion, not
-                             an integration task — so even a colour MATCH is
-                             capped at MANUAL_REVIEW, never a confident PASS
-                             (two different trucks of the same colour would
-                             pass this too), and (unlike the make classifier
-                             this replaced) a colour MISMATCH is also
-                             MANUAL_REVIEW rather than an outright REJECT, given
-                             the same uncalibrated-threshold caveat as
+     c. pure_side_profile  -> colour-histogram ONLY (CAB-ONLY crop, see below),
+                             against the same front reference photo — no
+                             embedding-similarity check here (SigLIP's embedding
+                             is angle-sensitive, so a side profile vs. a
+                             front-on photo would likely score low even for the
+                             same truck; colour is roughly angle-invariant and
+                             is the one corner_view signal that actually
+                             transfers). Without a ``front_reference_image``,
+                             also MANUAL_REVIEW ("unverifiable") — there's
+                             nothing else to go on for a bare side profile (no
+                             plate, no front grille). The individual-vehicle
+                             question is NOT solved here either way — this is
+                             the genuinely open piece flagged in the design
+                             discussion, not an integration task — so even a
+                             colour MATCH is capped at MANUAL_REVIEW, never a
+                             confident PASS (two different trucks of the same
+                             colour would pass this too), and (unlike the make
+                             classifier this replaced) a colour MISMATCH is
+                             also MANUAL_REVIEW rather than an outright REJECT,
+                             given the same uncalibrated-threshold caveat as
                              corner_view's colour check.
+
+   Colour-histogram crops are CAB-ONLY, not whole-vehicle (``_cab_color_similarity``,
+   ``_cab_crop``): a bounding region covering the front bumper/grille/hood/fenders,
+   with the windshield/window glass EXCLUDED (dark/reflective, would distort a
+   paint reading) and, for the side/corner photo, the cargo box/tipper/tanker/
+   trailer EXCLUDED too — the cargo body gets swapped or repainted far more often
+   than the cab on this platform's vehicles, so a whole-vehicle histogram could
+   flag a genuine same-cab match as a mismatch (or vice versa) purely because of
+   what's behind the cab, not because of the vehicle's actual identity. The crop
+   region comes from a VLM call (``classify_side_image_type``'s own read for the
+   side/corner photo, at no extra cost; ``classify_front_reference_cab_crop`` for
+   the reference photo, one more call) rather than a fixed fraction of the YOLO
+   bbox — cab length varies a lot with overall truck length (a 2-axle rigid vs. a
+   7-axle multi-axle truck), so a fixed proportion of the whole vehicle would
+   either clip the cab or bleed into the cargo box depending on the truck. If
+   either photo's cab region isn't confidently locatable, the histogram step is
+   simply unavailable (MANUAL_REVIEW) — never a silent fallback to the old
+   whole-vehicle crop, which would reintroduce this exact contamination problem.
 
    Make classifier removed from BOTH buckets above (formerly used in
    pure_side_profile, briefly also in corner_view): it's a coarse, brand-only
@@ -237,8 +256,43 @@ If BOTH a legible plate AND a visible windshield are present, prefer "vrn_visibl
 it's the stronger identity signal. Base your answer ONLY on what's actually visible in
 THIS specific photo, not on how this kind of upload is typically framed.
 
+Also locate the CAB CROP REGION -- a bounding box around ONLY the cab/driver-
+compartment's painted body panels (front bumper, grille, hood, front fenders, and the
+lower body of the cab doors) in THIS photo, for a later paint-colour comparison:
+- EXCLUDE the windshield/window glass entirely -- it's usually dark/reflective and
+  would distort a paint-colour reading if included.
+- EXCLUDE the cargo box, tipper body, tanker, or trailer entirely, even if it's the
+  majority of the frame -- the cargo body gets swapped/repainted far more often than
+  the cab on this platform's vehicles, so a colour comparison must stay confined to
+  the cab, never spill into the load body.
+- A little slack around mirrors/antennas sticking out past the cab is fine -- pixel
+  precision doesn't matter, staying within the cab's own paint does.
+- If the cab isn't clearly identifiable in THIS photo (heavily obstructed, too far/
+  blurry, wrong angle to tell where the cab ends), set "cab_crop_visible" to false
+  rather than guessing at coordinates.
+- Coordinates are fractions of the FULL photo (0.0 = left/top edge, 1.0 = right/
+  bottom edge), not relative to any bounding box.
+
 Reply with STRICT JSON only, in this field order:
-{"reason":"<short -- cite whether the windshield and/or plate are actually visible>","bucket":"vrn_visible"|"corner_view"|"pure_side_profile"}"""
+{"reason":"<short -- cite whether the windshield and/or plate are actually visible>","bucket":"vrn_visible"|"corner_view"|"pure_side_profile","cab_crop_visible":true|false,"cab_x_start":0.0-1.0,"cab_x_end":0.0-1.0,"cab_y_start":0.0-1.0,"cab_y_end":0.0-1.0}"""
+
+FRONT_REFERENCE_CAB_CROP_PROMPT = """You are looking at a truck/bus's own on-file
+FRONT-view reference photo, for a document-validation platform that compares it
+against a LATER side/corner-view upload of the same claimed vehicle to check whether
+the body paint matches.
+
+Locate the CAB CROP REGION -- a bounding box around ONLY the painted body panels
+visible from the front (bumper, grille, hood, front fenders) in THIS photo:
+- EXCLUDE the windshield/window glass entirely -- it's usually dark/reflective and
+  would distort a paint-colour reading if included.
+- EXCLUDE the sky, road, and any background -- stay within the vehicle's own body.
+- If the front body panels aren't clearly identifiable (heavily obstructed, too far/
+  blurry), set "cab_crop_visible" to false rather than guessing at coordinates.
+- Coordinates are fractions of the FULL photo (0.0 = left/top edge, 1.0 = right/
+  bottom edge), not relative to any bounding box.
+
+Reply with STRICT JSON only:
+{"reason":"<short>","cab_crop_visible":true|false,"cab_x_start":0.0-1.0,"cab_x_end":0.0-1.0,"cab_y_start":0.0-1.0,"cab_y_end":0.0-1.0}"""
 
 SIDE_IMAGE_TYPE_BACKENDS = ["claude", "gemini"]
 SIDE_IMAGE_BUCKETS = ("vrn_visible", "corner_view", "pure_side_profile")
@@ -263,6 +317,28 @@ def classify_side_image_type(
     elif backend == "gemini":
         from vfiv.backends.gemini import call_gemini_json
         r = call_gemini_json(image, SIDE_IMAGE_TYPE_PROMPT, model=model)
+    else:
+        raise ValueError(f"unknown side-image-type backend: {backend!r} "
+                         f"(expected one of {SIDE_IMAGE_TYPE_BACKENDS})")
+    return r
+
+
+def classify_front_reference_cab_crop(
+    image,
+    backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
+    model: str | None = None,
+) -> dict:
+    """Locates the cab-only, window-excluded body-colour region in a FRONT-view
+    reference photo -- the counterpart to ``classify_side_image_type``'s own
+    cab-crop fields (which describe the SIDE/corner-view upload instead), needed
+    because the reference photo is a different image that call never sees. See
+    the colour-histogram section of the module docstring for why both crops
+    matter. ``backend`` — "claude" (default) | "gemini"."""
+    if backend == "claude":
+        r = call_vlm_json(image, FRONT_REFERENCE_CAB_CROP_PROMPT, model or config.VLM_MODEL, max_tokens=200)
+    elif backend == "gemini":
+        from vfiv.backends.gemini import call_gemini_json
+        r = call_gemini_json(image, FRONT_REFERENCE_CAB_CROP_PROMPT, model=model)
     else:
         raise ValueError(f"unknown side-image-type backend: {backend!r} "
                          f"(expected one of {SIDE_IMAGE_TYPE_BACKENDS})")
@@ -403,6 +479,32 @@ def _truck_crop(image) -> np.ndarray:
     return arr[det.bbox[1]:det.bbox[3], det.bbox[0]:det.bbox[2]] if det is not None else arr
 
 
+def _cab_crop(image, cab_crop: dict | None) -> np.ndarray | None:
+    """Pixel-crop ``image`` to the cab-only, window-excluded region described by
+    ``cab_crop`` (as returned by ``classify_side_image_type``/
+    ``classify_front_reference_cab_crop``) -- fractions are relative to the FULL
+    photo, not any detector bbox. Returns None if the region wasn't confidently
+    identified (``cab_crop_visible`` false/missing) or the fractions don't
+    describe a usable box -- callers must treat that as "unavailable", never
+    silently fall back to a whole-vehicle crop (that would reintroduce exactly
+    the cargo-box-contamination problem this crop exists to avoid)."""
+    if not cab_crop or not cab_crop.get("cab_crop_visible"):
+        return None
+    try:
+        x0, x1 = float(cab_crop["cab_x_start"]), float(cab_crop["cab_x_end"])
+        y0, y1 = float(cab_crop["cab_y_start"]), float(cab_crop["cab_y_end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+        return None
+    arr = load_rgb_array(image)
+    H, W = arr.shape[:2]
+    x1px, x2px = int(x0 * W), max(int(x1 * W), int(x0 * W) + 1)
+    y1px, y2px = int(y0 * H), max(int(y1 * H), int(y0 * H) + 1)
+    crop = arr[y1px:y2px, x1px:x2px]
+    return crop if crop.size else None
+
+
 def check_side_completeness(
     image,
     completeness_min: float = config.SIDE_IMAGE_COMPLETENESS_MIN,
@@ -472,22 +574,65 @@ def check_side_vehicle_type(
     )
 
 
+def _cab_color_similarity(
+    image, front_reference_image,
+    side_cab_crop: dict | None,
+    cab_crop_backend: str,
+    cab_crop_model: str | None,
+) -> tuple[float | None, str | None]:
+    """Shared cab-only colour-histogram step for both corner_view and
+    pure_side_profile -- see module docstring for why the crop is confined to
+    the cab (bumper/grille/hood/fenders, window excluded) rather than the whole
+    vehicle: the cargo box/tipper/tanker/trailer gets swapped or repainted far
+    more often than the cab on this platform's vehicles, so a whole-vehicle
+    histogram can pass on a genuinely different cargo body, or flag a match on
+    the SAME cab as a mismatch just because the box behind it changed.
+
+    ``side_cab_crop`` is the cab-crop fields already returned by
+    ``classify_side_image_type`` for ``image`` (no extra call needed -- that
+    prompt already looks at this exact photo). The front reference's own
+    cab-crop needs a fresh, separate call (``classify_front_reference_cab_crop``)
+    since it's a different photo. Returns ``(None, failure_reason)`` if either
+    crop isn't confidently locatable -- never silently falls back to the old
+    whole-vehicle crop, which would reintroduce the exact contamination problem
+    this exists to avoid."""
+    cab = _cab_crop(image, side_cab_crop)
+    if cab is None:
+        return None, "cab region not confidently identifiable in the side/corner photo"
+
+    try:
+        ref_cab_raw = classify_front_reference_cab_crop(
+            front_reference_image, backend=cab_crop_backend, model=cab_crop_model)
+    except Exception as e:
+        return None, f"reference photo's cab region unavailable ({e})"
+    if not ref_cab_raw.get("checked"):
+        return None, f"reference photo's cab region unavailable ({ref_cab_raw.get('error', '?')})"
+    ref_cab = _cab_crop(front_reference_image, ref_cab_raw)
+    if ref_cab is None:
+        return None, "cab region not confidently identifiable in the reference photo"
+
+    return _color_histogram_similarity(cab, ref_cab), None
+
+
 def _identity_via_corner_view(
     image, front_reference_image,
+    side_cab_crop: dict | None = None,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
     color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
+    cab_crop_backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
+    cab_crop_model: str | None = None,
 ) -> tuple[str, str, dict]:
     """Identity here rests on TWO signals against this truck's OWN on-file front
-    photo -- a SigLIP embedding comparison (general "looks like the same vehicle")
-    and a colour-histogram comparison (specifically "same paint colour") -- both
+    photo -- a SigLIP embedding comparison (general "looks like the same vehicle",
+    over the WHOLE vehicle crop) and a colour-histogram comparison (specifically
+    "same cab paint colour", over a CAB-ONLY crop — see ``_cab_color_similarity``
+    for why the histogram is scoped narrower than the embedding check) — both
     much stronger than the generic 8-brand make classifier (see
     ``_identity_via_pure_side_profile``), which can't tell THIS Tata from any other
     Tata, only "Tata-shaped or not" (and not even reliably that -- see
     MakeClassifier's docstring). No make check here at all; without a
     ``front_reference_image`` there is nothing to compare against, so identity is
-    simply unverifiable from a corner view alone. Both crops are vehicle-only (via
-    the detector), never the raw uncropped photo -- background/road/sky colour
-    would otherwise swamp the histogram signal."""
+    simply unverifiable from a corner view alone."""
     detail = {"bucket": "corner_view", "front_similarity": None, "color_hist_similarity": None}
 
     if front_reference_image is None:
@@ -502,13 +647,16 @@ def _identity_via_corner_view(
     similarity = _cosine(siglip.embed_image(crop), siglip.embed_image(ref_crop))
     detail["front_similarity"] = similarity
 
-    color_similarity = _color_histogram_similarity(crop, ref_crop)
+    color_similarity, color_failure = _cab_color_similarity(
+        image, front_reference_image, side_cab_crop, cab_crop_backend, cab_crop_model)
     detail["color_hist_similarity"] = color_similarity
 
     failures = []
     if similarity < similarity_min:
         failures.append(f"front-similarity {similarity:.4f} < {similarity_min:.4f}")
-    if color_similarity < color_hist_min:
+    if color_similarity is None:
+        failures.append(f"cab-only colour comparison unavailable ({color_failure})")
+    elif color_similarity < color_hist_min:
         failures.append(f"colour-histogram similarity {color_similarity:.4f} < {color_hist_min:.4f}")
 
     if failures:
@@ -522,7 +670,10 @@ def _identity_via_corner_view(
 
 def _identity_via_pure_side_profile(
     image, front_reference_image,
+    side_cab_crop: dict | None = None,
     color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
+    cab_crop_backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
+    cab_crop_model: str | None = None,
 ) -> tuple[str, str, dict]:
     """Colour-histogram ONLY now — no make classifier here any more (see module
     docstring for why it was dropped from this bucket too). No embedding-
@@ -530,12 +681,16 @@ def _identity_via_pure_side_profile(
     pure side profile vs. a front-on reference photo would likely score low even
     for the exact same truck — colour is roughly angle-invariant (same paint from
     any angle) and is the one signal from ``_identity_via_corner_view``'s toolkit
-    that actually transfers here. Like the old make-based version, NEVER a
-    confident PASS — individual-vehicle identity genuinely isn't solved here even
-    with a colour match (two different trucks of the same colour would pass this
-    too) — but UNLIKE the old make-classifier version, also never an outright
-    REJECT: this shares corner_view's colour check's uncalibrated-threshold
-    caveat, so a mismatch here is a lead for a human, not an auto-reject."""
+    that actually transfers here. The histogram is CAB-ONLY (see
+    ``_cab_color_similarity``), for the same reason as corner_view: the cargo
+    box/tipper/tanker/trailer is swapped or repainted far more often than the cab,
+    so a whole-vehicle crop would let a changed cargo body corrupt the read
+    entirely. Like the old make-based version, NEVER a confident PASS —
+    individual-vehicle identity genuinely isn't solved here even with a colour
+    match (two different trucks of the same colour would pass this too) — but
+    UNLIKE the old make-classifier version, also never an outright REJECT: this
+    shares corner_view's colour check's uncalibrated-threshold caveat, so a
+    mismatch here is a lead for a human, not an auto-reject."""
     detail = {"bucket": "pure_side_profile", "color_hist_similarity": None}
 
     if front_reference_image is None:
@@ -543,11 +698,14 @@ def _identity_via_pure_side_profile(
                 "[pure_side_profile] no front reference photo supplied — identity "
                 "isn't verifiable from a bare side profile alone", detail)
 
-    crop = _truck_crop(image)
-    ref_crop = _truck_crop(front_reference_image)
-    color_similarity = _color_histogram_similarity(crop, ref_crop)
+    color_similarity, color_failure = _cab_color_similarity(
+        image, front_reference_image, side_cab_crop, cab_crop_backend, cab_crop_model)
     detail["color_hist_similarity"] = color_similarity
 
+    if color_similarity is None:
+        return ("MANUAL_REVIEW",
+                f"[pure_side_profile] cab-only colour comparison unavailable ({color_failure}) — "
+                "human check", detail)
     if color_similarity < color_hist_min:
         return ("MANUAL_REVIEW",
                 (f"[pure_side_profile] colour-histogram similarity {color_similarity:.4f} "
@@ -633,7 +791,15 @@ def check_side_identity(
     pure_side_profile's colour-histogram-only check (no embedding there — see that
     function's docstring for why). Without it, both buckets are MANUAL_REVIEW
     ("unverifiable"); no bucket falls back to the make classifier any more (see
-    module docstring for why it was dropped from both)."""
+    module docstring for why it was dropped from both).
+
+    Both colour-histogram checks compare CAB-ONLY crops, not the whole vehicle
+    (see ``_cab_color_similarity``) — this call's own ``classify_side_image_type``
+    read already locates the cab region in ``image`` at no extra cost, but
+    locating it in ``front_reference_image`` needs one more VLM call
+    (``classify_front_reference_cab_crop``, same ``type_backend``/``type_model``)
+    whenever a corner_view/pure_side_profile bucket with a reference photo
+    actually runs the histogram check."""
     try:
         type_raw = classify_side_image_type(image, backend=type_backend, model=type_model)
         if not type_raw.get("checked"):
@@ -652,10 +818,12 @@ def check_side_identity(
             decision, reason, detail = _identity_via_vrn(image, claimed_vrn)
         elif bucket == "corner_view":
             decision, reason, detail = _identity_via_corner_view(
-                image, front_reference_image, similarity_min, color_hist_min)
+                image, front_reference_image, type_raw, similarity_min, color_hist_min,
+                cab_crop_backend=type_backend, cab_crop_model=type_model)
         else:
             decision, reason, detail = _identity_via_pure_side_profile(
-                image, front_reference_image, color_hist_min)
+                image, front_reference_image, type_raw, color_hist_min,
+                cab_crop_backend=type_backend, cab_crop_model=type_model)
     except Exception as e:
         return SideImageIdentityResult(
             decision="MANUAL_REVIEW", checked=False, claimed_vrn=claimed_vrn, claimed_make=claimed_make,
