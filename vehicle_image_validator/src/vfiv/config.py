@@ -144,3 +144,31 @@ SIDE_IMAGE_SIMILARITY_MIN = float(os.environ.get("VFIV_SIDE_IMAGE_SIMILARITY_MIN
 # between two photos of the same truck shot at different times. Validate against
 # real same-truck vs. different-truck pairs before trusting this threshold.
 SIDE_IMAGE_COLOR_HIST_MIN = float(os.environ.get("VFIV_SIDE_IMAGE_COLOR_HIST_MIN", "0.8"))
+
+# Floor for backends.gate.completeness_score (the same YOLO-bbox-vs-frame-edge
+# heuristic Q1 uses, see GATE_ACCEPT_MIN above) applied to a side/axle photo --
+# "is the truck cut off at a frame edge?" Deliberately much more lenient than
+# Q1's own GATE_ACCEPT_MIN=0.7: a long truck/trailer shot from a normal standoff
+# distance can legitimately run off the left/right edge more than a compact
+# front-on shot would, so this only ever downgrades to MANUAL_REVIEW (see
+# side_image_check.py's check_side_completeness), never a solo REJECT like Q1's
+# own use of the same score. UNCALIBRATED -- a starting point only.
+SIDE_IMAGE_COMPLETENESS_MIN = float(os.environ.get("VFIV_SIDE_IMAGE_COMPLETENESS_MIN", "0.5"))
+
+# --- FASTag / side-image completeness ("is the whole thing actually in frame?") ----
+# Which model checks whether the FULL FASTag sticker (QR + barcode + printed
+# digits) is visible and not cut off/obscured -- "rekognition" isn't an option
+# here (Rekognition has no notion of "FASTag sticker", only generic text/object
+# detection), so this is Claude/Gemini only, same posture as
+# SIDE_IMAGE_TYPE_BACKEND above. See fastag_check.py::check_fastag_completeness.
+FASTAG_COMPLETENESS_BACKEND = os.environ.get("VFIV_FASTAG_COMPLETENESS_BACKEND", "claude")
+
+# Confidence floor (0-100, the VLM's own self-reported confidence -- same idea as
+# AXLE_COUNT_CONF_MIN) for trusting the sticker_complete verdict either way. Below
+# this, the read is too uncertain to call it either complete or incomplete, so it
+# falls back to MANUAL_REVIEW regardless of what sticker_complete says. UNCALIBRATED
+# -- a starting point only; tune both this and SIDE_IMAGE_COMPLETENESS_MIN above
+# against real photos of genuinely complete vs. cropped uploads before relying on
+# either to move a real decision, and adjust per-call (both check_fastag_upload and
+# check_side_image_upload accept these as overridable arguments, not just env vars).
+FASTAG_COMPLETENESS_CONF_MIN = float(os.environ.get("VFIV_FASTAG_COMPLETENESS_CONF_MIN", "70.0"))

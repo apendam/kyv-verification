@@ -31,9 +31,11 @@ Scope: these are the **end-to-end** flows only. The isolated per-check sub-tabs
 (Q1-only, Axle-only, QR-only, etc.) exist for backend comparison and aren't
 reproduced here. Thresholds below reflect current defaults in `config.py`;
 several (`SIDE_IMAGE_SIMILARITY_MIN`, `SIDE_IMAGE_COLOR_HIST_MIN`,
-`DUPLICATE_SIMILARITY_MIN`) are explicitly flagged as uncalibrated in the code
-and worth validating against real labeled pairs before relying on them in
-production.
+`DUPLICATE_SIMILARITY_MIN`, `SIDE_IMAGE_COMPLETENESS_MIN`,
+`FASTAG_COMPLETENESS_CONF_MIN`) are explicitly flagged as uncalibrated in the
+code and worth validating against real labeled pairs before relying on them in
+production. All of these are overridable per-call, not just via env var — see
+each check function's own arguments.
 
 ---
 
@@ -90,20 +92,23 @@ of the two is more severe.
 
 Not called from any production entry point yet — lives in
 `side_image/side_image_check.py::check_side_image_upload`, exercised through
-the webapp's End-to-end tab. Three independent checks, worst-of combined;
-duplicate is opt-in via `upload_id`.
+the webapp's End-to-end tab. Four independent checks, worst-of combined;
+completeness and axle/identity always run, duplicate is opt-in via `upload_id`.
 
 ```mermaid
 flowchart LR
-    IN2["Side/axle photo\n+ claimed VRN / Make / AxleCount\n+ front reference image"] --> DUP
+    IN2["Side/axle photo\n+ claimed VRN / Make / AxleCount\n+ front reference image"] --> COMPLETE
+    IN2 --> DUP
     IN2 --> AXLE
     IN2 --> IDENT
 
+    COMPLETE["Completeness\nYOLO bbox vs. frame edge\n(reuses Q1's own gate.completeness_score)\nis the truck cut off at an edge?\nlenient vs. Q1 -- long trucks legitimately crop"]
     DUP["Duplicate · optional\nSigLIP embed → pgvector\nimage_type=\"side\"\nruns only if upload_id given\nnever REJECTs on its own"]
     AXLE["Axle Count\nClaude/Gemini VLM\nwheelbase walk-through, 2-7 axles\nvs claimed count, conf ≥ 70%\n+ RC consistency (if axle_source given)\nauto → trusted / manual → vs vehicle_mapper"]
     IDENT["Identity Binding\nClaude/Gemini → bucket\nroutes on windshield/plate visibility\nvrn_visible → reuse Q2 logic\ncorner_view → embed + colour-hist\npure_side_profile → colour-hist only\n(decreasing reliability, top to bottom)"]
 
-    DUP --> COMB2["Overall = max(dup, axle, identity) by severity"]
+    COMPLETE --> COMB2["Overall = max(completeness, dup, axle, identity) by severity"]
+    DUP --> COMB2
     AXLE --> COMB2
     IDENT --> COMB2
     COMB2 --> P2[PASS]
@@ -118,13 +123,17 @@ flowchart LR
     class R2 reject
 ```
 
-Unlike Front Image, none of these three checks gate each other — all three
-always run (duplicate only if `upload_id` is given) and the worst result
-wins. The identity-binding bucket only ever reaches PASS through
-`corner_view`; the other two buckets are deliberately capped below it.
+Unlike Front Image, none of these four checks gate each other — all run
+(duplicate only if `upload_id` is given) and the worst result wins. The
+identity-binding bucket only ever reaches PASS through `corner_view`; the
+other two buckets are deliberately capped below it, and completeness is
+capped below it too — it's the same real bbox-vs-edge heuristic Q1 uses, but
+UNCALIBRATED for this framing (a long truck legitimately runs off-frame more
+than a compact front-on shot), so unlike Q1 it can never REJECT on its own.
 
 | Station | Script | Tech | What it decides |
 |---|---|---|---|
+| Completeness | `check_side_completeness` | YOLOv8, bbox-vs-edge heuristic | Is the truck's bounding box touching a frame edge, suggesting it's cut off? Reuses Q1's own detector + `gate.completeness_score`, lenient threshold. |
 | Duplicate | `duplicate_check.py` | SigLIP embed, pgvector | Near-duplicate of a prior upload under a different VRN? `image_type="side"` — never compared against front/FASTag. |
 | Axle Count | `side_image/side_image_check.py` | Claude/Gemini VLM | Counts axle positions front-to-rear (dual wheels vs. tandem/tridem bogies), citing the specific visual evidence per axle — never a brand/model assumption. |
 | RC consistency | `decide_axle_source_consistency` | lookup table | Manually-entered axle count vs. the vehicle's own `vehicle_mapper` class (e.g. `VC12 → 4`). Auto-filled counts are trusted as-is. |
@@ -136,8 +145,8 @@ wins. The identity-binding bucket only ever reaches PASS through
 
 - 🔴 **REJECT** — Axle count mismatch (confidence ≥ `70%`), OR manually-entered count disagrees with the RC-derived `vehicle_mapper` table.
 - 🔴 **REJECT** — `vrn_visible` bucket only: plate read, but doesn't match the claim.
-- 🟡 **MANUAL_REVIEW** — Axle read confidence < `70%`. Or duplicate flags a near-identical prior upload under a different VRN. Or `corner_view`'s embed < `0.97` or colour-hist < `0.80` (either alone). Or `pure_side_profile`, always — match or mismatch. Or no front reference photo at all.
-- 🟢 **PASS** — Axle matches (+ RC-consistent), AND identity resolves PASS — only reachable via `vrn_visible` match or `corner_view` clearing BOTH thresholds.
+- 🟡 **MANUAL_REVIEW** — Axle read confidence < `70%`. Or completeness score < `0.5` (truck bbox touches a frame edge). Or duplicate flags a near-identical prior upload under a different VRN. Or `corner_view`'s embed < `0.97` or colour-hist < `0.80` (either alone). Or `pure_side_profile`, always — match or mismatch. Or no front reference photo at all.
+- 🟢 **PASS** — Completeness clears (a truck was detected AND its bbox score ≥ `0.5`), axle matches (+ RC-consistent), AND identity resolves PASS — only reachable via `vrn_visible` match or `corner_view` clearing BOTH thresholds.
 
 ---
 
@@ -146,24 +155,29 @@ wins. The identity-binding bucket only ever reaches PASS through
 Also not wired into production — `fastag_image/fastag_check.py::check_fastag_upload`.
 Three identity sources read off one sticker; a disagreement between whichever
 were legibly read is itself a REJECT, checked *before* any of them are
-compared to the claim.
+compared to the claim. A fourth, independent check asks whether the whole
+sticker was even captured in the first place.
 
 ```mermaid
 flowchart LR
     IN3["FASTag photo\n+ claimed Tag ID / bank code"] --> DEC
     IN3 --> OCR
+    IN3 --> COMPLETE3
 
     DEC["Decode\npyzbar / zbar (deterministic)\nQR → UPI URI → pa param\nnetc.&lt;tag_id&gt;@&lt;bank&gt;\n1D barcode → direct, checksum"]
     OCR["Printed-digit OCR\nRekognition / Claude / Gemini\nthe one fuzzy/error-prone source of the three"]
+    COMPLETE3["Sticker completeness\nClaude/Gemini VLM (no detector exists)\nQR + barcode + printed digits\nall visible, not cut off/obscured?\ngated on the VLM's own confidence"]
 
     DEC --> CROSS
     OCR --> CROSS
     CROSS{{"Cross-source check\ndo legibly-read sources agree?\nchecked BEFORE any claim comparison"}}
     CROSS -- disagree --> R3A["REJECT\ntamper signal — skips claim match entirely"]
     CROSS -- agree --> MATCH["Match vs. claim\nQR / barcode: exact match first (deterministic)\nOCR: fuzzy, edit-distance ≤ 1, last resort\nQR match + bank code given ≠ QR's own → downgrade"]
-    MATCH --> P3[PASS]
-    MATCH --> M3[MANUAL_REVIEW]
-    MATCH --> R3B[REJECT]
+    MATCH --> COMB3["Overall = max(match, completeness) by severity"]
+    COMPLETE3 --> COMB3
+    COMB3 --> P3[PASS]
+    COMB3 --> M3[MANUAL_REVIEW]
+    COMB3 --> R3B[REJECT]
 
     classDef pass fill:#dcece1,stroke:#3c7a50,color:#1f4d30;
     classDef manual fill:#f1e4c9,stroke:#b07c22,color:#6b4b12;
@@ -176,14 +190,18 @@ flowchart LR
 Forging a QR, a checksummed barcode, AND matching printed digits all at once
 is a much higher bar than editing the visible digits alone — which is why
 disagreement between sources is judged before the claim ever enters the
-picture. Duplicate check (optional, `image_type="fastag"`) folds into the
-final result the same way as the other two image types.
+picture. A photo cropped tight to just the QR code can still legitimately
+match on identity alone — the QR is enough — so completeness is checked
+separately rather than folded into "nothing readable." Duplicate check
+(optional, `image_type="fastag"`) folds into the final result the same way as
+the other two image types.
 
 | Station | Script | Tech | What it decides |
 |---|---|---|---|
 | Decode | `backends/fastag_reader.py` | pyzbar / zbar | QR (parsed as a UPI deep link — tag id/bank live in the `pa` param) and 1D barcode, both deterministic — no model, no "backend" to swap. |
 | Printed-digit OCR | `read_fastag` | Rekognition, Claude, Gemini | Reads the human-readable serial printed below the barcode — backend-selectable, the only swappable piece. |
 | Cross-source + match | `decide_fastag` | `confusable_distance` | Consistency first (tamper signal), then match — QR/barcode exact, OCR fuzzy as the last resort. |
+| Sticker completeness | `check_fastag_completeness` | Claude/Gemini VLM | Are the QR, barcode, AND printed digits all visible/uncut, independent of whether whatever WAS captured happens to read fine? No detector exists for a sticker, so a VLM judgment call. |
 | QR only *(standalone)* | `decide_qr_only` | exact match | QR-parsed Tag ID vs. a claimed Tag ID alone — narrower than the full check, no cross-source verification. |
 | Printed digits only *(standalone)* | `decide_printed_digits_only` | fuzzy match | OCR'd digits vs. a claimed barcode number captured independently (e.g. a handheld scanner). |
 | Duplicate | `duplicate_check.py` | SigLIP embed, pgvector | Near-duplicate sticker photo filed under a different VRN? `image_type="fastag"`. |
@@ -192,8 +210,8 @@ final result the same way as the other two image types.
 
 - 🔴 **REJECT** — Two or more legibly-read sources disagree with each other — checked FIRST, before any claim comparison.
 - 🔴 **REJECT** — Sources agree, something legible was read, but it doesn't match the claimed Tag ID.
-- 🟡 **MANUAL_REVIEW** — Nothing readable at all (a bad photo isn't proof of fraud). Or QR matched but claimed bank code disagrees with the QR's own. Or duplicate flags a near-identical prior upload under a different VRN.
-- 🟢 **PASS** — Sources agree, and the Tag ID matches — via QR/barcode exact match first, OCR fuzzy match (≤1 confusable edit) only as the last resort.
+- 🟡 **MANUAL_REVIEW** — Nothing readable at all (a bad photo isn't proof of fraud). Or QR matched but claimed bank code disagrees with the QR's own. Or the sticker completeness read is confidently "incomplete," or its own confidence is < `70%` (too uncertain either way). Or duplicate flags a near-identical prior upload under a different VRN.
+- 🟢 **PASS** — Sources agree, the Tag ID matches (via QR/barcode exact match first, OCR fuzzy match ≤1 confusable edit only as the last resort), AND the sticker completeness read is a confident "complete."
 
 ---
 

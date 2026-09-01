@@ -496,6 +496,26 @@ Barcode read** or **Printed digits (OCR)** tab and you get the old raw-read-only
 display; fill it in and you get a real `PASS`/`MISMATCH`/`UNREADABLE` verdict on that
 one source alone, folded into the same result.
 
+**Sticker completeness** (`check_fastag_completeness` — always runs, not opt-in)
+— is the WHOLE sticker (QR + barcode + printed digits) actually captured in the
+photo, not just whichever part happens to read cleanly? A photo cropped tight to
+just the QR code can still legitimately `PASS` the identity check above — the QR
+alone is enough to match — so this exists as its own signal, independent of
+`decide_fastag`'s "nothing readable" path. No dedicated sticker detector exists
+to check this with a bounding box (unlike the side-image truck check below), so
+it's a narrow VLM judgment call instead (`FASTAG_COMPLETENESS_PROMPT`) —
+`config.FASTAG_COMPLETENESS_BACKEND`, `"claude"` (default) | `"gemini"` only;
+`"rekognition"` isn't an option here since Rekognition has no notion of "FASTag
+sticker," only generic text/object detection. Gated on the VLM's own
+self-reported confidence (`config.FASTAG_COMPLETENESS_CONF_MIN`, default `70`):
+below it, the read is too uncertain to call either way and falls back to
+`MANUAL_REVIEW` regardless of what it says; above it, both a confident "complete"
+and a confident "incomplete" are trusted. **UNCALIBRATED** — like every other new
+soft signal in this module, capped at `MANUAL_REVIEW`, never a solo `REJECT`.
+Both the backend/model and the confidence floor are overridable per-call on
+`check_fastag_upload` (`completeness_backend`, `completeness_model`,
+`completeness_conf_min`), not just via env var.
+
 ```bash
 python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936
 python -m vfiv.cli --image samples/fastag.jpg --type fastag --fastag-id 607469-009-0874936 --backend gemini
@@ -519,7 +539,21 @@ already-running webapp/CLI won't pick up a newly-installed library.
 ## Side/axle-image check (not wired into `validate_upload`)
 
 `check_side_image_upload()` (`side_image/side_image_check.py`) validates the side
-image used for axle-count verification, with two goals:
+image used for axle-count verification, with three goals:
+
+**Completeness** (`check_side_completeness` — always runs, not opt-in) — is the
+truck cut off at a frame edge, or actually fully captured? Reuses Q1's own real
+CV heuristic (`backends/gate.py`'s `completeness_score` — a YOLO-bbox-vs-frame-
+edge check, the same detector this module already runs for the identity crop)
+rather than inventing a new one. **Deliberately much more lenient than Q1's own
+`GATE_ACCEPT_MIN=0.7`** (`config.SIDE_IMAGE_COMPLETENESS_MIN`, default `0.5`): a
+long truck/trailer shot from a normal standoff distance can legitimately run off
+the left/right edge more than a compact front-on shot would, so unlike Q1's own
+tuned, `REJECT`-capable use of this score, a low score here only ever downgrades
+to `MANUAL_REVIEW`. **UNCALIBRATED** for side framing — tune
+`SIDE_IMAGE_COMPLETENESS_MIN` (or pass `side_image_completeness_min` per-call on
+`check_side_image_upload`) against real complete vs. cropped side photos before
+relying on it.
 
 **Axle count** — no dedicated axle/wheel detector is wired (would need a custom-
 trained model and a labeled dataset); this is a narrowed VLM judgment call instead,
@@ -655,10 +689,16 @@ python -m vfiv.cli --image samples/side.jpg --type side --vrn UP42T4069 --make "
 
 ## Next
 
-- **Side image** validator: new real-model + prompt combination for side-view
-  completeness + VRN/plate visibility checks.
-- **Fastag image** validator: new prompt/schema for a genuine Fastag sticker/tag photo
-  (tag ID legibility, placement, tamper/fraud red flags).
+- ~~**Side image** validator: new real-model + prompt combination for side-view
+  completeness + VRN/plate visibility checks.~~ Done — VRN/plate visibility via
+  `classify_side_image_type`'s bucket routing, side-view completeness via
+  `check_side_completeness` (see "Side/axle-image check" above). Both are
+  UNCALIBRATED for this framing and worth validating against real labeled photos.
+- ~~**Fastag image** validator: new prompt/schema for a genuine Fastag sticker/tag photo
+  (tag ID legibility, placement, tamper/fraud red flags).~~ Tag ID legibility/
+  matching and placement (sticker completeness) are done — see "FASTag check"
+  above. Tamper/fraud red flags beyond cross-source disagreement (e.g. a visibly
+  altered/re-printed sticker) remain open.
 - **Truck-finetuned vehicle detector**: replace the generic COCO `yolov8n.pt` in Q1 to
   fix the documented false-reject limitation.
 - **Verify the new experimentation backends once credentials exist**: Gemini, GCV Logo

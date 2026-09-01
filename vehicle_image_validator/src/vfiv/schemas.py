@@ -121,8 +121,30 @@ class FastagCheckResult(BaseModel):
     decoded_sources: Optional[dict[str, str]] = None  # e.g. {"qr": "...", "barcode:code128": "..."}
     extracted_printed_id: Optional[str] = None
     matched_via: Optional[str] = None  # "qr" | "barcode:<symbology>" | "ocr" | None
+    sticker_complete: Optional[bool] = None  # see FastagCompletenessResult
+    sticker_completeness_confidence: Optional[float] = None  # 0..100
     duplicate_is_suspect: Optional[bool] = None
     duplicate_matches: list[DuplicateMatchInfo] = []
+    error: Optional[str] = None
+
+
+class FastagCompletenessResult(BaseModel):
+    """Is the WHOLE FASTag sticker (QR + barcode + printed digits) actually
+    captured in this photo, or is part of it cut off/obscured? No dedicated
+    sticker detector exists to check this with a bounding box (unlike the side-
+    image truck check below), so this is a narrow VLM judgment call instead --
+    same "no CV model does this reliably here" posture as axle-count/bucket-
+    routing. Distinct from ``FastagCheckResult``'s own "nothing readable"
+    MANUAL_REVIEW path: a photo can legitimately read a PASS off just the QR
+    code while missing the barcode/printed digits entirely -- this check exists
+    to catch that partial-capture case. UNCALIBRATED VLM judgment call -- capped
+    at MANUAL_REVIEW, never a solo REJECT. See
+    ``fastag_image/fastag_check.py::check_fastag_completeness``."""
+    decision: Decision
+    checked: bool
+    sticker_complete: Optional[bool] = None
+    completeness_confidence: Optional[float] = None  # 0..100, the VLM's own self-reported confidence
+    reason: str
     error: Optional[str] = None
 
 
@@ -196,13 +218,31 @@ class SideImageIdentityResult(BaseModel):
     error: Optional[str] = None
 
 
+class SideCompletenessResult(BaseModel):
+    """Is the whole truck actually captured in this side/axle photo, or does the
+    detected bounding box suggest it's cut off at a frame edge? Reuses Q1's own
+    YOLO-bbox-vs-frame-edge heuristic (``backends/gate.py``'s
+    ``completeness_score``) rather than inventing a new one, but -- unlike Q1,
+    where it's a proven, production-tuned REJECT-capable signal -- this is
+    UNCALIBRATED for side framing (a long truck/trailer shot from a normal
+    standoff distance may legitimately run off the left/right edge more than a
+    compact front-on shot would), so it only ever reaches MANUAL_REVIEW, never a
+    solo REJECT. See ``side_image/side_image_check.py::check_side_completeness``."""
+    decision: Decision
+    checked: bool
+    completeness_score: Optional[float] = None  # 0..1, see backends/gate.py::completeness_score
+    reason: str
+    error: Optional[str] = None
+
+
 class SideImageCheckResult(BaseModel):
     """Side/axle-image validator — axle count (Claude judgment call, no dedicated
     detector wired) + identity-to-claimed-vehicle, routed by
     ``SideImageTypeClassifier`` into three buckets of DECREASING reliability
     (vrn_visible > corner_view > pure_side_profile — the last is NEVER a confident
-    PASS on its own, see ``side_image/side_image_check.py``). Overall ``decision``
-    is the worst of axle / identity / duplicate, same REJECT > MANUAL_REVIEW >
+    PASS on its own, see ``side_image/side_image_check.py``) + framing
+    completeness (``SideCompletenessResult``). Overall ``decision`` is the worst
+    of axle / identity / completeness / duplicate, same REJECT > MANUAL_REVIEW >
     PASS ordering as ``CombinedResult``."""
     decision: Decision
     reason: str
@@ -216,6 +256,7 @@ class SideImageCheckResult(BaseModel):
     mapper_expected_axle_count: Optional[int] = None  # axle_source == "manual" only
     identity_bucket: Optional[str] = None  # vrn_visible | corner_view | pure_side_profile
     identity_decision: Optional[str] = None
+    completeness_score: Optional[float] = None  # 0..1, see SideCompletenessResult
     duplicate_is_suspect: Optional[bool] = None
     duplicate_matches: list[DuplicateMatchInfo] = []
     error: Optional[str] = None

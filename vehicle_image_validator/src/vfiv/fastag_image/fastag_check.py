@@ -1,4 +1,5 @@
-"""FASTag validator — does the uploaded FASTag sticker photo belong to this truck?
+"""FASTag validator — does the uploaded FASTag sticker photo belong to this truck,
+and is the WHOLE sticker actually captured in the photo?
 
 Three independent representations of the tag's identity are cross-checked, both
 against EACH OTHER and against the claimed value:
@@ -15,6 +16,17 @@ printed digits) is a much higher bar than editing the visible digits alone — s
 MISMATCH between sources that were each independently, legibly read is itself a
 REJECT-worthy tamper signal, checked BEFORE comparing any of them to the claimed
 value. See ``backends/fastag_reader.py`` for the raw reads.
+
+A fourth, independent check — ``check_fastag_completeness`` — asks whether the
+whole sticker (QR + barcode + printed digits) is actually in frame, not just
+whether whatever WAS captured happens to read/match. A photo cropped tight to just
+the QR code can still legitimately PASS the identity check above (the QR alone is
+enough to match); this check exists to flag that as a framing/photo-quality issue
+in its own right. No dedicated sticker detector exists to check this with a
+bounding box (unlike the side-image truck check), so it's a narrow VLM judgment
+call instead — same "no CV model does this reliably here" posture as
+side_image_check.py's axle-count/bucket-routing. UNCALIBRATED — capped at
+MANUAL_REVIEW, never a solo REJECT.
 """
 from __future__ import annotations
 
@@ -24,8 +36,14 @@ from truck_extract_match.plate.format import confusable_distance
 
 from vfiv import config
 from vfiv.backends.fastag_reader import FastagReadError, parse_qr_payload, read_fastag
+from vfiv.base import call_vlm_json
 from vfiv.duplicate_check import check_duplicate
-from vfiv.schemas import FastagCheckResult, PrintedDigitsOnlyResult, QrOnlyResult
+from vfiv.schemas import (
+    FastagCheckResult,
+    FastagCompletenessResult,
+    PrintedDigitsOnlyResult,
+    QrOnlyResult,
+)
 
 
 def _norm(s: str | None) -> str:
@@ -61,6 +79,99 @@ def classify_fastag_upload(
     except Exception as e:
         return {"checked": False, "error": f"unexpected error reading FASTag ({e})"}
     return {"checked": True, "read": read}
+
+
+FASTAG_COMPLETENESS_PROMPT = """You are checking whether the FASTag sticker in this
+uploaded photo is FULLY captured, for a document-validation platform. A FASTag sticker
+has three parts that all need to be visible in the frame:
+- a QR code (a square barcode block)
+- a 1D barcode (a strip of vertical bars)
+- a printed human-readable digit string below/near the barcode (e.g.
+  "607469-009-0874936")
+
+Decide whether ALL THREE parts are visible within the photo's frame -- not cut off at
+an edge, not entirely covered by a finger/glare/reflection, and not so far away or
+blurry that a part is unreadable in principle (rather than just momentarily hard to
+read). A photo that only shows the QR code with the barcode/printed digits cut off or
+out of frame is NOT complete, even if the QR code itself is perfectly legible.
+
+Reply with STRICT JSON only:
+{"reason":"<short -- which parts are visible, which (if any) are missing/cut off/obscured>","sticker_complete":true|false,"confidence":0-100}"""
+
+FASTAG_COMPLETENESS_BACKENDS = ["claude", "gemini"]
+
+
+def classify_fastag_completeness(
+    image,
+    backend: str = config.FASTAG_COMPLETENESS_BACKEND,
+    model: str | None = None,
+) -> dict:
+    """VLM judgment call — see module docstring for why no dedicated sticker
+    detector is wired. ``backend`` — "claude" (default) | "gemini"; "rekognition"
+    isn't an option here, unlike the printed-digit OCR backend, since Rekognition
+    has no notion of "FASTag sticker", only generic text/object detection."""
+    if backend == "claude":
+        r = call_vlm_json(image, FASTAG_COMPLETENESS_PROMPT, model or config.VLM_MODEL, max_tokens=200)
+    elif backend == "gemini":
+        from vfiv.backends.gemini import call_gemini_json
+        r = call_gemini_json(image, FASTAG_COMPLETENESS_PROMPT, model=model)
+    else:
+        raise ValueError(f"unknown fastag-completeness backend: {backend!r} "
+                         f"(expected one of {FASTAG_COMPLETENESS_BACKENDS})")
+    return r
+
+
+def check_fastag_completeness(
+    image,
+    backend: str = config.FASTAG_COMPLETENESS_BACKEND,
+    model: str | None = None,
+    conf_min: float = config.FASTAG_COMPLETENESS_CONF_MIN,
+) -> FastagCompletenessResult:
+    """Is the whole sticker (QR + barcode + printed digits) actually captured in
+    this photo? Exposed standalone so it's independently testable from the
+    identity/match checks below — see module docstring for why this exists as its
+    own check rather than folding into ``decide_fastag``'s "nothing readable"
+    path.
+
+    ``conf_min`` gates on the VLM's own self-reported confidence (same idea as
+    ``AXLE_COUNT_CONF_MIN``): below it, the read is too uncertain to act on
+    either way and this falls back to MANUAL_REVIEW regardless of what
+    ``sticker_complete`` says — a confident "yes" is trusted, but so is a
+    confident "no"; only an unsure read gets the benefit of the doubt."""
+    try:
+        r = classify_fastag_completeness(image, backend=backend, model=model)
+    except Exception as e:
+        return FastagCompletenessResult(
+            decision="MANUAL_REVIEW", checked=False,
+            reason=f"completeness check unavailable ({e})", error=str(e),
+        )
+    if not r.get("checked"):
+        return FastagCompletenessResult(
+            decision="MANUAL_REVIEW", checked=False,
+            reason=f"completeness check unavailable ({r.get('error', '?')})", error=r.get("error"),
+        )
+    complete = bool(r.get("sticker_complete", False))
+    confidence = float(r.get("confidence", 0) or 0)
+    read_reason = r.get("reason", "")
+
+    if confidence < conf_min:
+        return FastagCompletenessResult(
+            decision="MANUAL_REVIEW", checked=True, sticker_complete=complete,
+            completeness_confidence=confidence,
+            reason=(f"completeness read confidence {confidence:.0f}% < {conf_min:.0f}% "
+                    f"— too uncertain to call either way ({read_reason})"),
+        )
+    if complete:
+        return FastagCompletenessResult(
+            decision="PASS", checked=True, sticker_complete=True, completeness_confidence=confidence,
+            reason=f"sticker appears fully captured ({read_reason})" if read_reason
+                   else "sticker appears fully captured",
+        )
+    return FastagCompletenessResult(
+        decision="MANUAL_REVIEW", checked=True, sticker_complete=False, completeness_confidence=confidence,
+        reason=(f"sticker may not be fully captured ({read_reason}) — "
+                f"uncalibrated VLM judgment, human check"),
+    )
 
 
 def decide_fastag(
@@ -280,11 +391,21 @@ def check_fastag_upload(
     vlm_model: str | None = None,
     claimed_vrn: str | None = None,
     upload_id: str | None = None,
+    completeness_backend: str = config.FASTAG_COMPLETENESS_BACKEND,
+    completeness_model: str | None = None,
+    completeness_conf_min: float = config.FASTAG_COMPLETENESS_CONF_MIN,
 ) -> FastagCheckResult:
     """Read then decide (single-call path). See ``decide_fastag`` for the decision
     logic and ``classify_fastag_upload`` for the raw reads. ``backend`` — "rekognition"
     (default) | "claude" | "gemini" — selects the printed-digit OCR source only; the
     barcode/QR decode always runs the same way regardless.
+
+    Always also runs ``check_fastag_completeness`` (see module docstring) and folds
+    its verdict in, worst-of — unlike duplicate below, this isn't opt-in, since it
+    needs nothing beyond the image itself. ``completeness_backend``/
+    ``completeness_model``/``completeness_conf_min`` override its defaults
+    per-call, independent of the OCR ``backend`` above (Rekognition can't run this
+    check at all — see ``config.FASTAG_COMPLETENESS_BACKEND``).
 
     Pass BOTH ``claimed_vrn`` and ``upload_id`` to also run the cross-upload
     duplicate check (``duplicate_check.py``, ``image_type="fastag"``) and fold its
@@ -301,6 +422,17 @@ def check_fastag_upload(
             error=r.get("error"),
         )
     result = decide_fastag(r, claimed_fastag_id, claimed_bank_code, max_ocr_edits)
+
+    completeness = check_fastag_completeness(
+        image, backend=completeness_backend, model=completeness_model,
+        conf_min=completeness_conf_min,
+    )
+    result = result.model_copy(update={
+        "decision": max([result.decision, completeness.decision], key=_SEVERITY.get),
+        "reason": f"{result.reason}; completeness: {completeness.reason}",
+        "sticker_complete": completeness.sticker_complete,
+        "sticker_completeness_confidence": completeness.completeness_confidence,
+    })
 
     if not (claimed_vrn and upload_id):
         return result

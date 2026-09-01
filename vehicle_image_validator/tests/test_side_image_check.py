@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
 
+from vfiv.backends.vehicle import Detection
 from vfiv.side_image.side_image_check import (
     _color_histogram_similarity,
     _worst_decision,
     check_axle_count,
+    check_side_completeness,
     check_side_identity,
     classify_axle_count,
     decide_axle_count,
@@ -385,3 +387,77 @@ def test_check_axle_count_folds_in_source_consistency_mismatch(monkeypatch):
     assert result.decision == "REJECT"  # but source-consistency overrides it
     assert result.mapper_expected_axle_count == 4
     assert "source-consistency" in result.reason
+
+
+# --- Completeness (is the whole truck in frame?) ------------------------------------
+
+def _stub_completeness_deps(monkeypatch, detection):
+    """``detection`` is a Detection or None (no truck found at all)."""
+    import vfiv.side_image.side_image_check as side_module
+
+    monkeypatch.setattr(side_module, "load_rgb_array", lambda image: "fake-array")
+
+    class _FakeDetector:
+        def best_truck(self, arr):
+            return detection
+
+    monkeypatch.setattr(side_module, "get_vehicle_detector", lambda: _FakeDetector())
+
+
+def test_check_side_completeness_passes_when_truck_fully_in_frame(monkeypatch):
+    """Vehicle bbox well clear of every edge with good coverage -- a real,
+    deterministic CV score, same heuristic Q1's front gate uses."""
+    det = Detection(bbox=(100, 100, 900, 900), conf=0.9, frame_wh=(1000, 1000))
+    _stub_completeness_deps(monkeypatch, det)
+
+    result = check_side_completeness("does-not-matter.jpg")
+    assert result.decision == "PASS"
+    assert result.checked is True
+    assert result.completeness_score == pytest.approx(1.0)
+
+
+def test_check_side_completeness_manual_review_when_bbox_touches_edges(monkeypatch):
+    """Bbox clipped at two edges (left + top) and low coverage -- suggests the
+    truck runs off the frame. Capped at MANUAL_REVIEW, never a solo REJECT --
+    this score is UNCALIBRATED for side framing, unlike Q1's own tuned use of it."""
+    det = Detection(bbox=(0, 0, 50, 900), conf=0.9, frame_wh=(1000, 1000))
+    _stub_completeness_deps(monkeypatch, det)
+
+    result = check_side_completeness("does-not-matter.jpg")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is True
+    assert "uncalibrated signal" in result.reason
+
+
+def test_check_side_completeness_manual_review_when_no_truck_detected(monkeypatch):
+    _stub_completeness_deps(monkeypatch, None)
+
+    result = check_side_completeness("does-not-matter.jpg")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "no truck detected" in result.reason
+
+
+def test_check_side_completeness_degrades_on_exception(monkeypatch):
+    import vfiv.side_image.side_image_check as side_module
+
+    def _boom(image):
+        raise RuntimeError("corrupt image file")
+
+    monkeypatch.setattr(side_module, "load_rgb_array", _boom)
+
+    result = check_side_completeness("does-not-matter.jpg")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "corrupt image file" in result.reason
+
+
+def test_check_side_completeness_threshold_is_overridable(monkeypatch):
+    """A caller can loosen/tighten completeness_min per-call, not just via the
+    config default/env var -- same tunability as every other threshold in this
+    module (axle_conf_min, side_image_similarity_min, etc.)."""
+    det = Detection(bbox=(0, 0, 50, 900), conf=0.9, frame_wh=(1000, 1000))
+    _stub_completeness_deps(monkeypatch, det)
+
+    lenient = check_side_completeness("does-not-matter.jpg", completeness_min=0.01)
+    assert lenient.decision == "PASS"

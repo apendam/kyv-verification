@@ -2,6 +2,7 @@ import pytest
 
 from vfiv.backends.fastag_reader import DecodedCode, FastagRead, parse_qr_payload, read_fastag
 from vfiv.fastag_image.fastag_check import (
+    check_fastag_completeness,
     check_fastag_upload,
     check_printed_digits_only,
     check_qr_only,
@@ -10,6 +11,10 @@ from vfiv.fastag_image.fastag_check import (
     decide_printed_digits_only,
     decide_qr_only,
 )
+
+
+def _complete_read(complete=True, confidence=95.0, reason="all parts visible"):
+    return {"checked": True, "sticker_complete": complete, "confidence": confidence, "reason": reason}
 
 
 def _read(codes=None, printed_id=None) -> dict:
@@ -126,6 +131,8 @@ def test_check_fastag_upload_skips_duplicate_check_without_vrn_and_upload_id(mon
     monkeypatch.setattr(fastag_module, "classify_fastag_upload", lambda image, backend, vlm_model=None: _read(
         codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")],
         printed_id="607469-009-0874936"))
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: _complete_read())
 
     def _fail_if_called(*args, **kwargs):
         raise AssertionError("check_duplicate should not be called without claimed_vrn + upload_id")
@@ -135,6 +142,7 @@ def test_check_fastag_upload_skips_duplicate_check_without_vrn_and_upload_id(mon
     result = check_fastag_upload("does-not-matter.jpg", claimed_fastag_id="607469-009-0874936")
     assert result.decision == "PASS"
     assert result.duplicate_is_suspect is None
+    assert result.sticker_complete is True
 
 
 def test_check_fastag_upload_folds_in_duplicate_suspect_when_vrn_and_upload_id_given(monkeypatch):
@@ -146,6 +154,8 @@ def test_check_fastag_upload_folds_in_duplicate_suspect_when_vrn_and_upload_id_g
     monkeypatch.setattr(fastag_module, "classify_fastag_upload", lambda image, backend, vlm_model=None: _read(
         codes=[DecodedCode(symbology="CODE128", data="607469-009-0874936")],
         printed_id="607469-009-0874936"))
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: _complete_read())
 
     def _fake_check_duplicate(image, upload_id, claimed_vrn, image_type="front"):
         assert image_type == "fastag"
@@ -271,3 +281,84 @@ def test_classify_fastag_upload_degrades_on_unexpected_exception_type(monkeypatc
     result = classify_fastag_upload("does-not-matter.jpg")
     assert result["checked"] is False
     assert "zbar shared library not found" in result["error"]
+
+
+# --- Sticker completeness (is the whole FASTag actually captured?) ------------------
+
+def test_check_fastag_completeness_passes_on_confident_complete_read(monkeypatch):
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: _complete_read(complete=True, confidence=95.0))
+
+    result = check_fastag_completeness("does-not-matter.jpg")
+    assert result.decision == "PASS"
+    assert result.checked is True
+    assert result.sticker_complete is True
+    assert result.completeness_confidence == 95.0
+
+
+def test_check_fastag_completeness_manual_review_on_confident_incomplete_read(monkeypatch):
+    """A confident 'no' is trusted just like a confident 'yes' -- capped at
+    MANUAL_REVIEW rather than REJECT, since this is an uncalibrated VLM judgment
+    call, not a proven signal like Q1's own completeness gate."""
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: _complete_read(
+                            complete=False, confidence=90.0, reason="barcode cut off at right edge"))
+
+    result = check_fastag_completeness("does-not-matter.jpg")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.sticker_complete is False
+    assert "barcode cut off" in result.reason
+
+
+def test_check_fastag_completeness_manual_review_when_confidence_below_floor(monkeypatch):
+    """A low-confidence read is too uncertain to act on either way -- MANUAL_REVIEW
+    regardless of what sticker_complete itself says."""
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: _complete_read(complete=True, confidence=30.0))
+
+    result = check_fastag_completeness("does-not-matter.jpg", conf_min=70.0)
+    assert result.decision == "MANUAL_REVIEW"
+    assert "too uncertain" in result.reason
+
+
+def test_check_fastag_completeness_degrades_when_unavailable(monkeypatch):
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: {"checked": False, "error": "no ANTHROPIC_API_KEY"})
+
+    result = check_fastag_completeness("does-not-matter.jpg")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "no ANTHROPIC_API_KEY" in result.reason
+
+
+def test_check_fastag_completeness_degrades_on_unknown_backend(monkeypatch):
+    result = check_fastag_completeness("does-not-matter.jpg", backend="rekognition")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.checked is False
+    assert "unknown fastag-completeness backend" in result.reason
+
+
+def test_check_fastag_upload_downgrades_to_manual_review_on_incomplete_sticker(monkeypatch):
+    """A matching Tag ID isn't enough on its own -- if the sticker itself looks
+    only partially captured, the overall decision must reflect that even though
+    the identity match alone would have PASSed."""
+    import vfiv.fastag_image.fastag_check as fastag_module
+
+    monkeypatch.setattr(fastag_module, "classify_fastag_upload", lambda image, backend, vlm_model=None: _read(
+        codes=[DecodedCode(symbology="QRCODE", data="607469009874936@icici")]))
+    monkeypatch.setattr(fastag_module, "classify_fastag_completeness",
+                        lambda image, backend=None, model=None: _complete_read(
+                            complete=False, confidence=88.0, reason="printed digits cut off"))
+
+    result = check_fastag_upload("does-not-matter.jpg", claimed_fastag_id="607469009874936")
+    assert result.decision == "MANUAL_REVIEW"
+    assert result.sticker_complete is False
+    assert "printed digits cut off" in result.reason

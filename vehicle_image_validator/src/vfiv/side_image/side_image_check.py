@@ -1,9 +1,18 @@
-"""Side/axle-image validator — does the axle count match, and does this side photo
-actually belong to the SAME truck as the separately-uploaded front photo?
+"""Side/axle-image validator — does the axle count match, does this side photo
+actually belong to the SAME truck as the separately-uploaded front photo, and is
+the truck actually fully in frame to begin with?
 
-Three checks, each independently reported (a single prompt can't run a duplicate
-search + a VLM axle count + an OCR/embedding identity check — see combined.py's
-docstring for why this has to live in code, same reasoning applies here):
+Four checks, each independently reported (a single prompt can't run a duplicate
+search + a VLM axle count + an OCR/embedding identity check + a CV framing check
+— see combined.py's docstring for why this has to live in code, same reasoning
+applies here):
+
+0. Completeness — is the truck cut off at a frame edge? Reuses Q1's own
+   YOLO-bbox-vs-frame-edge heuristic (``backends/gate.py``'s
+   ``completeness_score``, see ``check_side_completeness``) rather than a new
+   detector. UNCALIBRATED for side framing (unlike Q1's own tuned use of the
+   same score) — a low score here only ever reaches MANUAL_REVIEW, never a solo
+   REJECT.
 
 1. Duplicate check — reuses ``duplicate_check.py``'s ``check_duplicate``
    with ``image_type="side"``, only if ``upload_id`` is given. Scoped to the
@@ -93,10 +102,16 @@ from __future__ import annotations
 import numpy as np
 
 from vfiv import config
+from vfiv.backends.gate import completeness_score
 from vfiv.backends.image_io import load_rgb_array
 from vfiv.backends.siglip import get_siglip_model
 from vfiv.backends.vehicle import get_vehicle_detector
-from vfiv.schemas import AxleCountResult, SideImageCheckResult, SideImageIdentityResult
+from vfiv.schemas import (
+    AxleCountResult,
+    SideCompletenessResult,
+    SideImageCheckResult,
+    SideImageIdentityResult,
+)
 from vfiv.base import call_vlm_json
 from vfiv.duplicate_check import check_duplicate
 from vfiv.front_image.vrn_check import validate_vrn
@@ -379,6 +394,46 @@ def _truck_crop(image) -> np.ndarray:
     return arr[det.bbox[1]:det.bbox[3], det.bbox[0]:det.bbox[2]] if det is not None else arr
 
 
+def check_side_completeness(
+    image,
+    completeness_min: float = config.SIDE_IMAGE_COMPLETENESS_MIN,
+) -> SideCompletenessResult:
+    """Is the whole truck captured in this side/axle photo, or is it cut off at a
+    frame edge? Reuses Q1's own YOLO-bbox-vs-frame-edge heuristic
+    (``backends.gate.completeness_score``) rather than inventing a new one — the
+    same detector this module already runs for the identity crop
+    (``_truck_crop``), just also checked against the frame edges this time.
+    UNCALIBRATED for side framing (a long truck/trailer shot from a normal
+    standoff distance may legitimately run off the left/right edge more than a
+    compact front-on shot would) — so unlike Q1's own tuned use of this score, a
+    low score here is capped at MANUAL_REVIEW, never an outright REJECT."""
+    try:
+        arr = load_rgb_array(image)
+        det = get_vehicle_detector().best_truck(arr)
+    except Exception as e:
+        return SideCompletenessResult(
+            decision="MANUAL_REVIEW", checked=False,
+            reason=f"completeness check unavailable ({e})", error=str(e),
+        )
+    if det is None:
+        return SideCompletenessResult(
+            decision="MANUAL_REVIEW", checked=False,
+            reason="no truck detected — can't assess whether it's fully in frame",
+        )
+    score = completeness_score(det.bbox, det.frame_wh)
+    if score < completeness_min:
+        return SideCompletenessResult(
+            decision="MANUAL_REVIEW", checked=True, completeness_score=score,
+            reason=(f"vehicle bounding box suggests the truck may be cut off at a frame "
+                    f"edge (completeness {score:.2f} < {completeness_min:.2f}) — "
+                    f"uncalibrated signal, human check"),
+        )
+    return SideCompletenessResult(
+        decision="PASS", checked=True, completeness_score=score,
+        reason=f"vehicle appears fully in frame (completeness {score:.2f})",
+    )
+
+
 def _identity_via_corner_view(
     image, front_reference_image,
     similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
@@ -588,6 +643,7 @@ def check_side_image_upload(
     axle_conf_min: float = config.AXLE_COUNT_CONF_MIN,
     side_image_similarity_min: float = config.SIDE_IMAGE_SIMILARITY_MIN,
     side_image_color_hist_min: float = config.SIDE_IMAGE_COLOR_HIST_MIN,
+    side_image_completeness_min: float = config.SIDE_IMAGE_COMPLETENESS_MIN,
     axle_backend: str = config.AXLE_COUNT_BACKEND,
     axle_model: str | None = None,
     axle_source: str | None = None,
@@ -595,10 +651,11 @@ def check_side_image_upload(
     type_backend: str = config.SIDE_IMAGE_TYPE_BACKEND,
     type_model: str | None = None,
 ) -> SideImageCheckResult:
-    """The single entry point for a side/axle-image upload. Runs duplicate check
-    (if ``upload_id`` given), axle count (``check_axle_count``), and identity-
-    binding (``check_side_identity``), then takes the worst decision across
-    whichever checks ran — see module docstring for the full breakdown.
+    """The single entry point for a side/axle-image upload. Runs completeness
+    (``check_side_completeness``), duplicate check (if ``upload_id`` given), axle
+    count (``check_axle_count``), and identity-binding (``check_side_identity``),
+    then takes the worst decision across whichever checks ran — see module
+    docstring for the full breakdown.
 
     ``axle_backend`` — "claude" (default) | "gemini" — selects which model reads
     the axle count. ``type_backend`` — same choices — selects which model routes
@@ -611,6 +668,7 @@ def check_side_image_upload(
     ``check_axle_count``'s docstring.
     """
     try:
+        completeness = check_side_completeness(image, completeness_min=side_image_completeness_min)
         dup = check_duplicate(image, upload_id, claimed_vrn, image_type="side") if upload_id else None
         axle = check_axle_count(image, claimed_axle_count, backend=axle_backend,
                                 model=axle_model, conf_min=axle_conf_min,
@@ -625,12 +683,13 @@ def check_side_image_upload(
             reason=f"side-image check unavailable ({e})", error=str(e),
         )
 
-    decisions = [axle.decision, identity.decision]
+    decisions = [completeness.decision, axle.decision, identity.decision]
     if dup is not None:
         decisions.append(dup.decision)
     overall = _worst_decision(*decisions)
 
-    reason_parts = [f"axle: {axle.reason}", f"identity: {identity.reason}"]
+    reason_parts = [f"completeness: {completeness.reason}", f"axle: {axle.reason}",
+                     f"identity: {identity.reason}"]
     if dup is not None:
         reason_parts.append(f"duplicate: {dup.reason}")
 
@@ -647,6 +706,7 @@ def check_side_image_upload(
         mapper_expected_axle_count=axle.mapper_expected_axle_count,
         identity_bucket=identity.identity_bucket,
         identity_decision=identity.decision,
+        completeness_score=completeness.completeness_score,
         duplicate_is_suspect=dup.is_duplicate_suspect if dup is not None else None,
         duplicate_matches=dup.duplicate_matches if dup is not None else [],
     )
