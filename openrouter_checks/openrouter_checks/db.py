@@ -150,12 +150,12 @@ def list_reference_images(conn: sqlite3.Connection, image_type: str) -> list[dic
     (see fetch_reference_embeddings for that).
     """
     rows = conn.execute(
-        "SELECT upload_id, image_path, claimed_vrn, created_at FROM reference_images "
+        "SELECT upload_id, image_path, claimed_vrn, embed_model, created_at FROM reference_images "
         "WHERE image_type = ? ORDER BY created_at DESC",
         (image_type,),
     ).fetchall()
-    return [{"upload_id": r[0], "image_path": r[1], "claimed_vrn": r[2], "created_at": r[3]}
-            for r in rows]
+    return [{"upload_id": r[0], "image_path": r[1], "claimed_vrn": r[2], "embed_model": r[3],
+             "created_at": r[4], "image_type": image_type} for r in rows]
 
 
 def delete_reference_image(conn: sqlite3.Connection, upload_id: str, image_type: str) -> None:

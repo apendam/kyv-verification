@@ -252,6 +252,39 @@ CUSTOM_CSS = """
     border-radius: 7px !important;
     box-shadow: var(--mac-shadow) !important;
 }
+
+/* Reference-image preview popup -- a plain gr.Group repurposed as a fixed,
+   centered overlay with a dimmed backdrop, since this Gradio version has
+   no native modal/dialog component. */
+#sr-preview-modal {
+    position: fixed !important;
+    inset: 0 !important;
+    /* Gradio sets an inline min-width (in px, from this block's position in
+       the pre-modal layout) that a bare `inset: 0` doesn't override --
+       without pinning width/height explicitly too, the "full-viewport"
+       backdrop only ever covered that leftover column width. */
+    width: 100vw !important;
+    height: 100vh !important;
+    min-width: 100vw !important;
+    max-width: 100vw !important;
+    z-index: 1000 !important;
+    background: rgba(0,0,0,0.45) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 24px !important;
+}
+#sr-preview-modal > * {
+    max-width: 560px !important;
+    width: 100% !important;
+}
+#sr-preview-modal .block {
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3) !important;
+}
 """
 
 
@@ -356,61 +389,78 @@ def _persist_reference_image(image_file: str, upload_id: str, image_type: str) -
     return str(dest)
 
 
+MAX_REF_ROWS = 20  # soft cap on the line-item list -- a "showing latest N" tool, not a paginated browser
+
+
 def _reference_rows(image_type: str) -> list[dict]:
     """Stored reference rows of one type whose file still exists on disk
     (a pre-persistence row's Gradio temp file is long gone) — the shared
-    source for both the gallery's images and the row metadata needed to
-    map a click back to an upload_id for deletion.
+    source for the line-item list, the popup preview, and delete.
     """
     conn = db.connect(config.DEFAULT_DB_PATH)
     return [r for r in db.list_reference_images(conn, image_type) if Path(r["image_path"]).is_file()]
 
 
-def refresh_gallery(image_type: str) -> list[tuple[str, str]]:
-    """Thumbnails of every stored reference image of one type, captioned
-    with its upload ID (+ claimed VRN if set) — lets you view the individual
-    images behind a repository-stats count, not just the total.
+def _row_line(r: dict) -> str:
+    ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["created_at"]))
+    vrn = r["claimed_vrn"] or "—"
+    return f"**{r['upload_id']}**  \nVRN: {vrn} &middot; added {ts}"
+
+
+def refresh_row_list(image_type: str):
+    """Returns the flat list of gr.update(...) values for the MAX_REF_ROWS
+    fixed row slots (label text + row visibility, one pair per slot) plus
+    the underlying rows list for state — every caller that changes what's
+    stored (seed, delete, switching Image type, page load) drives the same
+    list of output components through this one function so they can't drift
+    out of sync with each other.
     """
-    return [(r["image_path"], r["upload_id"] + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else ""))
-            for r in _reference_rows(image_type)]
+    rows = _reference_rows(image_type)[:MAX_REF_ROWS]
+    updates: list = []
+    for i in range(MAX_REF_ROWS):
+        if i < len(rows):
+            updates.append(gr.update(value=_row_line(rows[i])))
+            updates.append(gr.update(visible=True))
+        else:
+            updates.append(gr.update(value=""))
+            updates.append(gr.update(visible=False))
+    updates.append(rows)
+    return updates
 
 
-def refresh_gallery_and_rows(image_type: str) -> tuple[list[tuple[str, str]], list[dict]]:
-    rows = _reference_rows(image_type)
-    gallery = [(r["image_path"], r["upload_id"] + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else ""))
-               for r in rows]
-    return gallery, rows
+def open_preview(rows: list[dict], idx: int):
+    if idx >= len(rows):
+        return gr.update(visible=False), None, ""
+    r = rows[idx]
+    info = (f"**Upload ID:** `{r['upload_id']}`  \n"
+            f"**Type:** {r['image_type']}  \n"
+            f"**Claimed VRN:** {r['claimed_vrn'] or '—'}  \n"
+            f"**Embedding model:** `{r['embed_model']}`  \n"
+            f"**Added:** {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['created_at']))}")
+    return gr.update(visible=True), r["image_path"], info
 
 
-def on_gallery_select(rows: list[dict], evt: gr.SelectData):
-    if not rows or evt.index is None or evt.index >= len(rows):
-        return "", None
-    r = rows[evt.index]
-    label = f"Selected: `{r['upload_id']}`" + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else "")
-    return label, r["upload_id"]
+def close_preview():
+    return gr.update(visible=False), None, ""
 
 
-def do_delete_reference(upload_id: str | None, image_type: str):
-    if not upload_id:
-        gallery, rows = refresh_gallery_and_rows(image_type)
-        return "Click an image in the gallery first, then Delete.", refresh_repo_stats(), gallery, rows, "", None
-
+def delete_reference(rows: list[dict], idx: int, image_type: str) -> str:
+    if idx >= len(rows):
+        return ""
+    upload_id = rows[idx]["upload_id"]
     conn = db.connect(config.DEFAULT_DB_PATH)
-    rows_before = db.list_reference_images(conn, image_type)
-    match = next((r for r in rows_before if r["upload_id"] == upload_id), None)
+    match = next((r for r in rows if r["upload_id"] == upload_id), None)
     db.delete_reference_image(conn, upload_id, image_type)
     if match and Path(match["image_path"]).is_file():
         Path(match["image_path"]).unlink()
-
-    gallery, rows = refresh_gallery_and_rows(image_type)
-    return f"Deleted `{upload_id}`.", refresh_repo_stats(), gallery, rows, "", None
+    return f"Deleted `{upload_id}`."
 
 
 def run_seed(image_file, image_type, upload_id, vrn, embed_model):
     stats = refresh_repo_stats()
-    gallery, rows = refresh_gallery_and_rows(image_type)
+    row_updates = refresh_row_list(image_type)
     if not image_file:
-        return "### Upload an image first.", stats, gallery, rows
+        return "### Upload an image first.", stats, *row_updates
 
     vrn = (vrn or "").strip() or None
     upload_id = (upload_id or "").strip()
@@ -426,9 +476,9 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
         client = OpenRouterClient()
         result = client.embed(model=embed_model, image_path=image_file)
     except OpenRouterInsufficientCredits as exc:
-        return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, gallery, rows
+        return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, *row_updates
     except Exception as exc:  # noqa: BLE001
-        return f"### Error\n\n{exc}", stats, gallery, rows
+        return f"### Error\n\n{exc}", stats, *row_updates
 
     stored_path = _persist_reference_image(image_file, upload_id, image_type)
     db.insert_reference_image(
@@ -437,8 +487,7 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
     )
     msg = (f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; "
            f"${result.cost_usd:.5f} &middot; {result.prompt_tokens} tokens")
-    gallery, rows = refresh_gallery_and_rows(image_type)
-    return msg, refresh_repo_stats(), gallery, rows
+    return msg, refresh_repo_stats(), *refresh_row_list(image_type)
 
 
 # --- Model Catalog tab ----------------------------------------------------------
@@ -555,32 +604,62 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     sr_result_out = gr.Markdown()
                     gr.Markdown("**Repository stats**")
                     sr_stats_out = gr.Markdown(value=refresh_repo_stats)
-                    gr.Markdown("**Stored images — click one to select, then Delete to remove it**")
-                    sr_gallery_out = gr.Gallery(
-                        columns=3, height=320, object_fit="cover", show_label=False,
-                    )
-                    sr_selected_label = gr.Markdown()
-                    sr_delete_btn = gr.Button("Delete selected", variant="secondary")
-                    sr_gallery_rows = gr.State([])
-                    sr_selected_id = gr.State(None)
+                    gr.Markdown("**Stored images**")
+                    sr_rows_state = gr.State([])
+                    sr_row_labels: list[gr.Markdown] = []
+                    sr_row_containers: list[gr.Row] = []
+                    sr_row_preview_btns: list[gr.Button] = []
+                    sr_row_delete_btns: list[gr.Button] = []
+                    for _i in range(MAX_REF_ROWS):
+                        with gr.Row(visible=False, equal_height=True) as _row:
+                            _label = gr.Markdown()
+                            _preview_btn = gr.Button("Preview", size="sm", scale=0, min_width=90)
+                            _delete_btn = gr.Button("Delete", size="sm", scale=0, min_width=90,
+                                                    variant="secondary")
+                        sr_row_containers.append(_row)
+                        sr_row_labels.append(_label)
+                        sr_row_preview_btns.append(_preview_btn)
+                        sr_row_delete_btns.append(_delete_btn)
+
+            # Preview popup -- an always-present, normally-hidden overlay
+            # (styled via #sr-preview-modal in CUSTOM_CSS) rather than a
+            # native dialog component, since this Gradio version has none.
+            with gr.Group(visible=False, elem_id="sr-preview-modal") as sr_modal:
+                sr_modal_image = gr.Image(show_label=False, interactive=False)
+                sr_modal_info = gr.Markdown()
+                sr_modal_close_btn = gr.Button("Close")
+
+            sr_row_refresh_outputs = []
+            for _label, _row in zip(sr_row_labels, sr_row_containers):
+                sr_row_refresh_outputs.append(_label)
+                sr_row_refresh_outputs.append(_row)
+            sr_row_refresh_outputs.append(sr_rows_state)
 
             sr_file_in.change(on_seed_upload, inputs=[sr_file_in], outputs=[sr_preview, sr_filename])
-            sr_type_in.change(refresh_gallery_and_rows, inputs=[sr_type_in],
-                              outputs=[sr_gallery_out, sr_gallery_rows])
-            sr_gallery_out.select(on_gallery_select, inputs=[sr_gallery_rows],
-                                  outputs=[sr_selected_label, sr_selected_id])
-            sr_delete_btn.click(
-                do_delete_reference, inputs=[sr_selected_id, sr_type_in],
-                outputs=[sr_result_out, sr_stats_out, sr_gallery_out, sr_gallery_rows,
-                        sr_selected_label, sr_selected_id],
-            )
+            sr_type_in.change(refresh_row_list, inputs=[sr_type_in], outputs=sr_row_refresh_outputs)
+            demo.load(refresh_row_list, inputs=[sr_type_in], outputs=sr_row_refresh_outputs)
+
+            sr_modal_close_btn.click(close_preview, outputs=[sr_modal, sr_modal_image, sr_modal_info])
+
+            for _idx, (_preview_btn, _delete_btn) in enumerate(zip(sr_row_preview_btns, sr_row_delete_btns)):
+                _preview_btn.click(
+                    lambda rows, idx=_idx: open_preview(rows, idx), inputs=[sr_rows_state],
+                    outputs=[sr_modal, sr_modal_image, sr_modal_info],
+                )
+                _delete_btn.click(
+                    lambda rows, image_type, idx=_idx: (
+                        delete_reference(rows, idx, image_type), refresh_repo_stats(),
+                        *refresh_row_list(image_type),
+                    ),
+                    inputs=[sr_rows_state, sr_type_in],
+                    outputs=[sr_result_out, sr_stats_out, *sr_row_refresh_outputs],
+                )
+
             sr_run_btn.click(
                 run_seed,
                 inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_embed_dd],
-                outputs=[sr_result_out, sr_stats_out, sr_gallery_out, sr_gallery_rows],
+                outputs=[sr_result_out, sr_stats_out, *sr_row_refresh_outputs],
             )
-            demo.load(refresh_gallery_and_rows, inputs=[sr_type_in],
-                     outputs=[sr_gallery_out, sr_gallery_rows])
 
         # --- Model Catalog -----------------------------------------------------
         with gr.Tab("Model Catalog"):
