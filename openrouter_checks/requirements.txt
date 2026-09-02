@@ -1,6 +1,9 @@
 requests>=2.31
 python-dotenv>=1.0
-gradio>=4.0
+gradio>=4.0,<5.0
+# gradio 4.x still imports huggingface_hub.HfFolder, removed in huggingface_hub
+# 1.0 — pin below that or gradio's import fails at startup.
+huggingface_hub<1.0
 Pillow>=10.0
 
 # Pure-logic VRN/maker matching, reused from the sibling package instead of
