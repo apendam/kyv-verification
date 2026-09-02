@@ -8,10 +8,11 @@ of reference images (see db.fetch_reference_embeddings for the scaling note).
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
 from dataclasses import dataclass
 
-from . import config, db
+from . import config, db, imaging
 from .client import OpenRouterClient
 
 
@@ -40,14 +41,32 @@ def check_duplicate(conn: sqlite3.Connection, client: OpenRouterClient, *,
                      exclude_upload_id: str | None = None,
                      embed_model: str = config.DEFAULT_EMBED_MODEL,
                      similarity_min: float = config.DUPLICATE_SIMILARITY_MIN,
+                     plate_bbox: tuple[float, float, float, float] | None = None,
                      ) -> tuple[DuplicateResult, "EmbedCallInfo"]:
     """Embeds `image_path`, compares it against every stored reference image of
     the same `image_type`, and flags a duplicate only when the closest match is
     at or above `similarity_min` AND was filed under a *different* claimed VRN —
     an honest re-upload under the same VRN is never flagged (same rule the
     existing pgvector-based checker uses).
+
+    `plate_bbox` (x_min, y_min, x_max, y_max, 0-1 fractions of image
+    width/height — the PLATE_READ_SCHEMA field shape), when given, is blacked
+    out before embedding: the comparison is then based on the rest of the
+    vehicle rather than the plate, so reusing the same photo under a
+    different claimed VRN by only swapping the plate can't dodge this check,
+    and the embedding isn't biased by whatever text happens to be on the
+    plate. Reference images stored via `db.insert_reference_image` are
+    expected to have been masked the same way before their embedding was
+    computed, for the comparison to be meaningful.
     """
-    result = client.embed(model=embed_model, image_path=image_path)
+    embed_path = image_path
+    if plate_bbox is not None:
+        embed_path = imaging.mask_normalized_box(image_path, plate_bbox)
+    try:
+        result = client.embed(model=embed_model, image_path=embed_path)
+    finally:
+        if embed_path != image_path:
+            os.unlink(embed_path)  # a masked temp copy, never the original
     call_info = EmbedCallInfo(result.model, result.prompt_tokens, result.cost_usd, result.latency_ms)
 
     candidates = db.fetch_reference_embeddings(conn, image_type, exclude_upload_id)

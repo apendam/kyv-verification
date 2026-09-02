@@ -15,6 +15,7 @@ Run with:
 """
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -26,7 +27,7 @@ load_dotenv()  # must run before `from . import config` reads OPENROUTER_API_KEY
 import gradio as gr
 from PIL import Image
 
-from . import config, db, models
+from . import config, db, imaging, models, prompts, schemas
 from .client import OpenRouterClient, OpenRouterInsufficientCredits
 from .gate_sequence import run_gate_sequence
 
@@ -37,6 +38,12 @@ from .gate_sequence import run_gate_sequence
 # DB and shown in the gallery.
 REFERENCE_STORE_DIR = Path(__file__).resolve().parent.parent / "reference_images"
 REFERENCE_STORE_DIR.mkdir(exist_ok=True)
+
+# Runs client-side, immediately on click -- independent of (and much faster
+# than) the actual run, which can take several seconds. Without this, if
+# you'd scrolled down to check the uploaded image before clicking Run, the
+# results panel updates off-screen with no visible sign anything happened.
+_SCROLL_TOP_JS = "() => { window.scrollTo({top: 0, behavior: 'smooth'}); }"
 
 # --- theme: light, macOS-native (System Settings / Finder style) -------------
 # No webfont import -- -apple-system/BlinkMacSystemFont resolve to the real
@@ -537,7 +544,38 @@ def delete_reference(rows: list[dict], idx: int, image_type: str) -> str:
     return f"Deleted `{upload_id}`."
 
 
-def run_seed(image_file, image_type, upload_id, vrn, embed_model):
+def _locate_plate_bbox(client: OpenRouterClient, conn, image_path: str, vision_model: str,
+                        upload_id: str, image_type: str) -> tuple[float, float, float, float] | None:
+    """One extra vision call so the same plate-masking the Check Image path
+    gets "for free" (piggybacked on its VRN check) also applies here, where
+    there's no other reason to read the plate. Logged like every other model
+    call for cost transparency. A technical failure just skips masking for
+    this seed rather than failing it outright -- an unmasked embedding is
+    still useful, only slightly less robust to a plate-swap duplicate.
+    """
+    try:
+        r = client.chat_json(
+            model=vision_model, system_prompt=prompts.PLATE_READ_SYSTEM,
+            user_text=prompts.plate_read_user_text(), image_paths=[image_path],
+            json_schema=schemas.PLATE_READ_SCHEMA, schema_name="plate_locate",
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.log_check(conn, upload_id=upload_id, image_type=image_type, check_name="plate_locate",
+                     model=vision_model, verdict="technical_failure", detail={"error": str(exc)},
+                     technical_failure=True)
+        return None
+
+    db.log_check(conn, upload_id=upload_id, image_type=image_type, check_name="plate_locate",
+                 model=r.model, verdict="ok" if r.data.get("plate_visible") else "not_visible",
+                 detail=r.data, prompt_tokens=r.prompt_tokens, completion_tokens=r.completion_tokens,
+                 cost_usd=r.cost_usd, latency_ms=r.latency_ms)
+    if not r.data.get("plate_visible", False):
+        return None
+    return (r.data.get("bbox_x_min", 0.0), r.data.get("bbox_y_min", 0.0),
+            r.data.get("bbox_x_max", 0.0), r.data.get("bbox_y_max", 0.0))
+
+
+def run_seed(image_file, image_type, upload_id, vrn, vision_model, embed_model):
     stats = refresh_repo_stats()
     row_updates = refresh_row_list(image_type)
     if not image_file:
@@ -553,14 +591,23 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
         upload_id = f"ref-{vrn}-{image_type}" if vrn else f"ref-{image_type}-{time.time_ns()}"
 
     conn = db.connect(config.DEFAULT_DB_PATH)
+    embed_path = image_file
     try:
         client = OpenRouterClient()
-        result = client.embed(model=embed_model, image_path=image_file)
+        plate_bbox = _locate_plate_bbox(client, conn, image_file, vision_model, upload_id, image_type)
+        if plate_bbox is not None:
+            embed_path = imaging.mask_normalized_box(image_file, plate_bbox)
+        result = client.embed(model=embed_model, image_path=embed_path)
     except OpenRouterInsufficientCredits as exc:
         return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, *row_updates
     except Exception as exc:  # noqa: BLE001
         return f"### Error\n\n{exc}", stats, *row_updates
+    finally:
+        if embed_path != image_file:
+            os.unlink(embed_path)  # a masked temp copy, never the original upload
 
+    # The ORIGINAL (unmasked) upload is what gets stored/previewed -- only
+    # the embedding computation ever sees the plate-masked version.
     stored_path = _persist_reference_image(image_file, upload_id, image_type)
     db.insert_reference_image(
         conn, upload_id=upload_id, image_type=image_type, image_path=stored_path,
@@ -660,6 +707,11 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     ci_summary_out = gr.Markdown()
 
             ci_file_in.change(on_check_image_upload, inputs=[ci_file_in], outputs=[ci_preview, ci_filename])
+            # Fires immediately on click, independent of the run itself (which
+            # can take a few seconds) -- if you'd scrolled down to check the
+            # uploaded image, the results panel is otherwise off-screen with
+            # no visible sign anything happened until you scroll back up.
+            ci_run_btn.click(None, None, None, js=_SCROLL_TOP_JS)
             ci_run_btn.click(
                 run_check_image,
                 inputs=[ci_file_in, ci_vrn_in, ci_make_in, ci_upload_id_in, ci_vision_dd, ci_embed_dd],
@@ -678,8 +730,13 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     sr_upload_id_in = gr.Textbox(
                         label="Upload ID (optional — auto-generated from VRN + image type if left blank)")
                     sr_vrn_in = gr.Textbox(label="Claimed VRN")
-                    sr_embed_dd = gr.Dropdown(models.embed_models(), value=config.DEFAULT_EMBED_MODEL,
-                                              allow_custom_value=True, label="Embedding model")
+                    with gr.Row():
+                        sr_vision_dd = gr.Dropdown(
+                            models.vision_models(), value=config.DEFAULT_VISION_MODEL,
+                            allow_custom_value=True,
+                            label="Vision model (locates the plate to mask before embedding)")
+                        sr_embed_dd = gr.Dropdown(models.embed_models(), value=config.DEFAULT_EMBED_MODEL,
+                                                  allow_custom_value=True, label="Embedding model")
                     sr_run_btn = gr.Button("Add to repository", variant="primary")
                 with gr.Column(scale=1):
                     sr_result_out = gr.Markdown()
@@ -742,9 +799,10 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     outputs=[sr_result_out, sr_stats_out, *sr_row_refresh_outputs],
                 )
 
+            sr_run_btn.click(None, None, None, js=_SCROLL_TOP_JS)
             sr_run_btn.click(
                 run_seed,
-                inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_embed_dd],
+                inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_vision_dd, sr_embed_dd],
                 outputs=[sr_result_out, sr_stats_out, *sr_row_refresh_outputs],
             )
 

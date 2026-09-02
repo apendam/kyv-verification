@@ -19,6 +19,13 @@ photo of a truck or bus. Read exactly what is printed on the plate — do not gu
 out, or illegible, say so rather than fabricating a read. Ignore any other painted text \
 on the vehicle body (slogans, phone numbers) — only the plate itself.
 
+Also locate the plate's bounding box in the image, as fractions of the image's width \
+and height (0,0 is the top-left corner, 1,1 is the bottom-right corner) — this is used \
+to black out the plate before an unrelated duplicate-photo comparison, so give your best \
+estimate of the box whenever any part of a plate is visible, even if it's too blurry, \
+angled, or small to actually read (plate_visible can be true while plate_readable is \
+false). Use 0 for all four box values only when no plate is visible at all.
+
 Respond only with the requested JSON."""
 
 MAKER_READ_SYSTEM = """You are reading the manufacturer/brand marking on this truck or \

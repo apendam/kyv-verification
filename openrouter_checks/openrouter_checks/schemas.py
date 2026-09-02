@@ -38,8 +38,34 @@ PLATE_READ_SCHEMA: dict = {
         },
         "confidence": {"type": "number", "description": "0-1 confidence in plate_text."},
         "reasoning": {"type": "string"},
+        "plate_visible": {
+            "type": "boolean",
+            "description": (
+                "True if any part of a plate is visible in frame, even if plate_readable is "
+                "false (e.g. angled, blurry, or partly cropped) -- used to black out the plate "
+                "area before duplicate-image comparison, so this can be true independently of "
+                "plate_readable."
+            ),
+        },
+        "bbox_x_min": {
+            "type": "number",
+            "description": "Left edge of the plate's bounding box, as a 0-1 fraction of image width. 0 if plate_visible is false.",
+        },
+        "bbox_y_min": {
+            "type": "number",
+            "description": "Top edge of the plate's bounding box, as a 0-1 fraction of image height. 0 if plate_visible is false.",
+        },
+        "bbox_x_max": {
+            "type": "number",
+            "description": "Right edge of the plate's bounding box, as a 0-1 fraction of image width. 0 if plate_visible is false.",
+        },
+        "bbox_y_max": {
+            "type": "number",
+            "description": "Bottom edge of the plate's bounding box, as a 0-1 fraction of image height. 0 if plate_visible is false.",
+        },
     },
-    "required": ["plate_readable", "plate_text", "confidence", "reasoning"],
+    "required": ["plate_readable", "plate_text", "confidence", "reasoning", "plate_visible",
+                 "bbox_x_min", "bbox_y_min", "bbox_x_max", "bbox_y_max"],
     "additionalProperties": False,
 }
 

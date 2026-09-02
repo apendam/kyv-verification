@@ -107,6 +107,14 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
     steps.append({"check": "vrn_check", **r.data, "outcome": vrn_verdict.outcome,
                   "distance": vrn_verdict.distance})
 
+    # Reused by the duplicate check below (last gate) to black out the plate
+    # before embedding -- same call that already reads the plate text, so no
+    # extra vision call needed for this side of the gate sequence.
+    plate_bbox = None
+    if r.data.get("plate_visible", False):
+        plate_bbox = (r.data.get("bbox_x_min", 0.0), r.data.get("bbox_y_min", 0.0),
+                      r.data.get("bbox_x_max", 0.0), r.data.get("bbox_y_max", 0.0))
+
     if vrn_verdict.outcome == "mismatch_other":
         return finish("REJECT", "VRN mismatch")
     if vrn_verdict.outcome == "mismatch_similar":
@@ -151,6 +159,7 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
         dup_result, call_info = duplicate.check_duplicate(
             conn, client, image_path=str(image_path), image_type="front",
             claimed_vrn=claimed_vrn, exclude_upload_id=upload_id, embed_model=embed_model,
+            plate_bbox=plate_bbox,
         )
     except OpenRouterInsufficientCredits:
         raise
