@@ -15,6 +15,7 @@ Run with:
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import gradio as gr
@@ -231,8 +232,9 @@ def on_check_image_upload(file_path):
 def run_check_image(image_file, vrn, make, upload_id, vision_model, embed_model):
     if not image_file:
         return "### Upload an image first.", "", ""
-    if not vrn or not make or not upload_id:
-        return "### VRN, make, and upload ID are all required.", "", ""
+    if not vrn or not make:
+        return "### VRN and make are both required.", "", ""
+    upload_id = (upload_id or "").strip() or f"check-{vrn.strip()}-{int(time.time())}"
 
     conn = db.connect(config.DEFAULT_DB_PATH)
     try:
@@ -243,7 +245,7 @@ def run_check_image(image_file, vrn, make, upload_id, vision_model, embed_model)
     try:
         result = run_gate_sequence(
             conn, client, image_path=image_file, claimed_vrn=vrn.strip(),
-            claimed_make=make.strip(), upload_id=upload_id.strip(),
+            claimed_make=make.strip(), upload_id=upload_id,
             vision_model=vision_model, embed_model=embed_model,
         )
     except OpenRouterInsufficientCredits as exc:
@@ -252,8 +254,8 @@ def run_check_image(image_file, vrn, make, upload_id, vision_model, embed_model)
         return f"### Error\n\n{exc}", "", ""
 
     t = client.totals
-    summary = (f"{t.calls} call(s) &middot; {t.prompt_tokens + t.completion_tokens} tokens "
-               f"&middot; ${t.cost_usd:.5f}")
+    summary = (f"upload_id: `{upload_id}` &middot; {t.calls} call(s) &middot; "
+               f"{t.prompt_tokens + t.completion_tokens} tokens &middot; ${t.cost_usd:.5f}")
     return _banner(result.decision, result.reason), _format_steps(result.steps), summary
 
 
@@ -276,8 +278,15 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
     stats = refresh_repo_stats()
     if not image_file:
         return "### Upload an image first.", stats
+
+    vrn = (vrn or "").strip() or None
+    upload_id = (upload_id or "").strip()
     if not upload_id:
-        return "### Upload ID is required.", stats
+        # Same fallback vfiv/webapp.py uses: one reference per VRN+type by
+        # default (re-seeding the same VRN's front image replaces it, rather
+        # than piling up duplicates), falling back to a timestamp if even
+        # the VRN was left blank.
+        upload_id = f"ref-{vrn}-{image_type}" if vrn else f"ref-{image_type}-{int(time.time())}"
 
     conn = db.connect(config.DEFAULT_DB_PATH)
     try:
@@ -289,8 +298,8 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
         return f"### Error\n\n{exc}", stats
 
     db.insert_reference_image(
-        conn, upload_id=upload_id.strip(), image_type=image_type, image_path=image_file,
-        claimed_vrn=(vrn or "").strip() or None, embedding=result.vector, embed_model=result.model,
+        conn, upload_id=upload_id, image_type=image_type, image_path=image_file,
+        claimed_vrn=vrn, embedding=result.vector, embed_model=result.model,
     )
     msg = (f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; "
            f"${result.cost_usd:.5f} &middot; {result.prompt_tokens} tokens")
@@ -364,7 +373,8 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     ci_filename = gr.Markdown()
                     ci_vrn_in = gr.Textbox(label="Claimed VRN")
                     ci_make_in = gr.Textbox(label="Claimed make")
-                    ci_upload_id_in = gr.Textbox(label="Upload ID")
+                    ci_upload_id_in = gr.Textbox(
+                        label="Upload ID (optional — auto-generated from the VRN if left blank)")
                     with gr.Row():
                         ci_vision_dd = gr.Dropdown(models.vision_models(), value=config.DEFAULT_VISION_MODEL,
                                                    allow_custom_value=True, label="Vision model")
@@ -392,7 +402,8 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     sr_file_in = gr.File(label="Reference image", file_types=["image"], type="filepath")
                     sr_preview = gr.Image(label="Preview", interactive=False)
                     sr_filename = gr.Markdown()
-                    sr_upload_id_in = gr.Textbox(label="Upload ID")
+                    sr_upload_id_in = gr.Textbox(
+                        label="Upload ID (optional — auto-generated from VRN + image type if left blank)")
                     sr_vrn_in = gr.Textbox(label="Claimed VRN")
                     sr_embed_dd = gr.Dropdown(models.embed_models(), value=config.DEFAULT_EMBED_MODEL,
                                               allow_custom_value=True, label="Embedding model")
