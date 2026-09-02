@@ -18,6 +18,10 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # must run before `from . import config` reads OPENROUTER_API_KEY
+
 import gradio as gr
 from PIL import Image
 
