@@ -55,8 +55,8 @@ _DECISION_STYLE = {
 
 TITLEBAR_HTML = """
 <div style="display:flex; align-items:center; gap:8px; padding:10px 16px;
-            background:#e8e8ed; border-radius:10px 10px 0 0; margin:-1px -1px 0;
-            border-bottom:1px solid #d2d2d7;">
+            background:#3a3a3c; border-radius:10px 10px 0 0; margin:-1px -1px 0;
+            border-bottom:1px solid #545456;">
   <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57;display:inline-block;"></span>
   <span style="width:12px;height:12px;border-radius:50%;background:#febc2e;display:inline-block;"></span>
   <span style="width:12px;height:12px;border-radius:50%;background:#28c840;display:inline-block;"></span>
@@ -65,15 +65,16 @@ TITLEBAR_HTML = """
 
 CUSTOM_CSS = """
 :root {
-    --bb-black: #f5f5f7;
-    --bb-panel: #ffffff;
-    --bb-panel-2: #f5f5f7;
-    --bb-white: #1d1d1f;
-    --bb-muted: #6e6e73;
+    --bb-black: #1c1c1e;
+    --bb-panel: #2c2c2e;
+    --bb-panel-2: #3a3a3c;
+    --bb-elevated: #4a4a4d;
+    --bb-white: #f5f5f7;
+    --bb-muted: #98989d;
     --bb-turquoise: #d71e48;
-    --bb-turquoise-dark: #a8152f;
-    --bb-border: #d2d2d7;
-    --mac-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --bb-turquoise-dark: #ff375f;
+    --bb-border: #545456;
+    --mac-shadow: 0 2px 10px rgba(0,0,0,0.45), 0 1px 3px rgba(0,0,0,0.35);
 }
 
 .gradio-container {
@@ -118,7 +119,7 @@ CUSTOM_CSS = """
 /* Top tab row restyled as a macOS toolbar segmented control rather than an
    underlined web tab bar. */
 .gradio-container .tab-container[role="tablist"] {
-    background: #e8e8ed !important;
+    background: var(--bb-panel-2) !important;
     border-radius: 8px !important;
     padding: 3px !important;
     gap: 0 !important;
@@ -133,35 +134,64 @@ CUSTOM_CSS = """
 }
 .gradio-container button[role="tab"].selected {
     color: var(--bb-white) !important;
-    background: #ffffff !important;
+    background: var(--bb-elevated) !important;
     box-shadow: var(--mac-shadow) !important;
 }
 /* Gradio paints the selected-tab indicator as a blue ::after bar (not a
-   border), which the .selected rule above never reaches — the white chip
+   border), which the .selected rule above never reaches — the raised chip
    background already shows which tab is active, so just hide it. */
 .gradio-container button[role="tab"].selected::after {
     background: transparent !important;
 }
 
-.gradio-container input:not([type=radio]):not([type=checkbox]),
+.gradio-container input:not([type=radio]):not([type=checkbox]):not([role=combobox]),
 .gradio-container textarea, .gradio-container select {
-    background: #ffffff !important;
+    background: var(--bb-panel-2) !important;
     color: var(--bb-white) !important;
     border: 1px solid var(--bb-border) !important;
     border-radius: 8px !important;
 }
-.gradio-container input:not([type=radio]):not([type=checkbox]):focus,
+.gradio-container input:not([type=radio]):not([type=checkbox]):not([role=combobox]):focus,
 .gradio-container textarea:focus {
     border-color: var(--bb-turquoise) !important;
-    outline: 2px solid color-mix(in srgb, var(--bb-turquoise) 25%, transparent) !important;
+    outline: 2px solid color-mix(in srgb, var(--bb-turquoise) 35%, transparent) !important;
     outline-offset: 0 !important;
 }
 
+/* Dropdown (gr.Dropdown) is its own beast: the real visible "box" is the
+   .wrap-inner div, and its inner <input role=combobox> deliberately ships
+   with no border of its own (class="border-none") -- styling that inner
+   input the same way as a plain textbox produced a second, mismatched
+   border nested inside the first, and its text had no ellipsis so a long
+   model id just got hard-clipped mid-character. Style the wrapper as the
+   one visible box and let the input sit inside it borderless/transparent. */
+.gradio-container .wrap-inner {
+    background: var(--bb-panel-2) !important;
+    border: 1px solid var(--bb-border) !important;
+    border-radius: 8px !important;
+}
+.gradio-container .wrap-inner:focus-within {
+    border-color: var(--bb-turquoise) !important;
+    outline: 2px solid color-mix(in srgb, var(--bb-turquoise) 35%, transparent) !important;
+}
+.gradio-container input[role=combobox] {
+    background: transparent !important;
+    border: none !important;
+    outline: none !important;
+    color: var(--bb-white) !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+}
+.gradio-container .icon-wrap svg {
+    fill: var(--bb-muted) !important;
+}
+
 /* Radio group restyled as a macOS segmented control (one pill track, the
-   selected option gets a white "chip" with a soft shadow) instead of the
+   selected option gets a raised "chip" with a soft shadow) instead of the
    default row of separately-bordered pills. */
 .gradio-container fieldset .wrap {
-    background: #e8e8ed !important;
+    background: var(--bb-panel-2) !important;
     border-radius: 8px !important;
     padding: 3px !important;
     display: inline-flex !important;
@@ -175,7 +205,7 @@ CUSTOM_CSS = """
     color: var(--bb-muted) !important;
 }
 .gradio-container fieldset label.selected {
-    background: #ffffff !important;
+    background: var(--bb-elevated) !important;
     color: var(--bb-white) !important;
     box-shadow: var(--mac-shadow) !important;
 }
@@ -191,18 +221,18 @@ CUSTOM_CSS = """
 }
 
 .gradio-container ul.options {
-    background: #ffffff !important;
+    background: var(--bb-panel-2) !important;
     border: 1px solid var(--bb-border) !important;
     border-radius: 8px !important;
     box-shadow: var(--mac-shadow) !important;
 }
 .gradio-container ul.options li.item {
     color: var(--bb-white) !important;
-    background: #ffffff !important;
+    background: var(--bb-panel-2) !important;
 }
 .gradio-container ul.options li.item.selected,
 .gradio-container ul.options li.item.active {
-    background: #f5f5f7 !important;
+    background: var(--bb-elevated) !important;
     color: var(--bb-white) !important;
 }
 .gradio-container ul.options li.item:hover {
@@ -246,7 +276,7 @@ CUSTOM_CSS = """
 }
 
 .gradio-container button.secondary {
-    background: #ffffff !important;
+    background: var(--bb-panel-2) !important;
     color: var(--bb-white) !important;
     border: 1px solid var(--bb-border) !important;
     border-radius: 7px !important;
@@ -282,10 +312,10 @@ CUSTOM_CSS = """
    single shadow and continuous rounded corners, rather than three
    separately-boxed Gradio blocks stacked with gaps between them. */
 #sr-preview-window {
-    background: #ffffff !important;
+    background: var(--bb-panel) !important;
     border-radius: 12px !important;
     overflow: hidden !important;
-    box-shadow: 0 24px 70px rgba(0,0,0,0.4) !important;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.6) !important;
     max-width: 480px !important;
     width: 100% !important;
 }
@@ -297,7 +327,7 @@ CUSTOM_CSS = """
     background: transparent !important;
 }
 #sr-preview-titlebar {
-    background: #e8e8ed !important;
+    background: var(--bb-panel-2) !important;
     padding: 10px 10px 10px 16px !important;
     display: flex !important;
     align-items: center !important;
