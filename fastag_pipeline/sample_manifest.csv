@@ -1,0 +1,3 @@
+image_path,claimed_vrn,claimed_barcode,claimed_tag_id,claimed_bank_code,upload_id,vision_model
+samples/tag_001.jpg,MH12AB1234,9876543210123,ABC123456,ICICI,fastag_001,
+samples/tag_002.jpg,MH14CD5678,1122334455667,XYZ987654,HDFC,fastag_002,anthropic/claude-sonnet-5

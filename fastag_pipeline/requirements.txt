@@ -1,0 +1,10 @@
+requests>=2.31
+python-dotenv>=1.0
+Pillow>=10.0
+# Deterministic barcode/QR decoding -- pure-wheel install (no system zbar
+# dependency, unlike pyzbar), decodes both 1D barcodes (Code128/Code39/
+# EAN13/ITF) and QR codes.
+zxing-cpp>=2.2
+
+# Excel output for scripts/batch_check.py
+openpyxl>=3.1
