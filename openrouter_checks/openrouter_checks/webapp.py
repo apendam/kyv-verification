@@ -291,11 +291,20 @@ def do_verify_model(model_id: str):
         return "Enter a model id first (e.g. `mistralai/pixtral-large-2411`).", False, False
     model_id = model_id.strip()
     try:
-        info = models.fetch_model_info(model_id)
+        all_models = models.list_all_models()
+        info = models.fetch_model_info(model_id, all_models)
     except Exception as exc:  # noqa: BLE001
         return f"Lookup against OpenRouter failed: {exc}", False, False
     if info is None:
-        return f"`{model_id}` was not found in OpenRouter's model list — check the id at openrouter.ai/models.", False, False
+        suggestions = models.find_similar_models(model_id, all_models)
+        msg = (f"`{model_id}` was not found — OpenRouter ids are exact and case-sensitive "
+               f"(`provider/lowercase-slug`), not the bold display name shown on the site.")
+        if suggestions:
+            lines = "\n".join(f"- `{m['id']}` — {m.get('name', '')}" for m in suggestions)
+            msg += f"\n\nDid you mean:\n\n{lines}"
+        else:
+            msg += " No close match found either — double check the id at openrouter.ai/models."
+        return msg, False, False
 
     modalities = info.get("architecture", {}).get("input_modalities", [])
     is_vision = "image" in modalities
