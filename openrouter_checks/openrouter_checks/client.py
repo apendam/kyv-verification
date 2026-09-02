@@ -230,17 +230,26 @@ class OpenRouterClient:
               text: str | None = None) -> EmbedResult:
         """Embed an image and/or text. At least one of image_path/text is required —
         pass both for a joint embedding on models that support it.
+
+        For image input, OpenRouter's `input` field is an array of `{"content":
+        [...]}` wrapper objects (content-part dicts nested under a "content"
+        key), NOT a bare array of content-part dicts — sending the flat form
+        (each part as a top-level array item) 400s with a Zod "invalid_union"
+        error, since it matches neither the plain-string nor array-of-strings
+        branch of the schema.
         """
         if image_path is None and text is None:
             raise ValueError("embed() needs image_path and/or text")
 
         if image_path is not None and text is not None:
-            inp: Any = [
+            content: Any = [
                 {"type": "text", "text": text},
                 {"type": "image_url", "image_url": {"url": _image_to_data_uri(image_path)}},
             ]
+            inp: Any = [{"content": content}]
         elif image_path is not None:
-            inp = [{"type": "image_url", "image_url": {"url": _image_to_data_uri(image_path)}}]
+            content = [{"type": "image_url", "image_url": {"url": _image_to_data_uri(image_path)}}]
+            inp = [{"content": content}]
         else:
             inp = text
 
