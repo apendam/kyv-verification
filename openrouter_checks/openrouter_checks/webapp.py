@@ -443,12 +443,20 @@ def on_seed_upload(file_path):
     return image, label
 
 
+IMAGE_TYPES = ["front", "fastag", "side"]
+
+
 def refresh_repo_stats() -> str:
-    conn = db.connect(config.DEFAULT_DB_PATH)
-    stats = db.reference_stats(conn)
-    if not stats:
+    # Counts via _reference_rows (same file-exists filter the line-item list
+    # uses) rather than a raw DB count -- a plain COUNT(*) previously
+    # disagreed with what was actually shown whenever a row's file was
+    # missing (e.g. a pre-persistence row pointing at a long-gone Gradio
+    # temp path), showing "1 image(s)" over an empty list.
+    counts = {t: len(_reference_rows(t)) for t in IMAGE_TYPES}
+    counts = {t: n for t, n in counts.items() if n > 0}
+    if not counts:
         return "_Repository is empty — nothing seeded yet._"
-    return "\n".join(f"- **{t}**: {n} image(s)" for t, n in sorted(stats.items()))
+    return "\n".join(f"- **{t}**: {n} image(s)" for t, n in sorted(counts.items()))
 
 
 def _persist_reference_image(image_file: str, upload_id: str, image_type: str) -> str:
