@@ -15,6 +15,7 @@ Run with:
 """
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -28,6 +29,14 @@ from PIL import Image
 from . import config, db, models
 from .client import OpenRouterClient, OpenRouterInsufficientCredits
 from .gate_sequence import run_gate_sequence
+
+# Gradio uploads land in an ephemeral temp dir (cleared on restart, maybe
+# sooner) — fine for a Check Image run (used once, then discarded), but a
+# seeded reference image needs to still be viewable later, so it's copied
+# here on seed and this path (not the temp one) is what gets stored in the
+# DB and shown in the gallery.
+REFERENCE_STORE_DIR = Path(__file__).resolve().parent.parent / "reference_images"
+REFERENCE_STORE_DIR.mkdir(exist_ok=True)
 
 # --- theme: light, macOS-native (System Settings / Finder style) -------------
 # No webfont import -- -apple-system/BlinkMacSystemFont resolve to the real
@@ -336,10 +345,38 @@ def refresh_repo_stats() -> str:
     return "\n".join(f"- **{t}**: {n} image(s)" for t, n in sorted(stats.items()))
 
 
+def _persist_reference_image(image_file: str, upload_id: str, image_type: str) -> str:
+    """Copies the uploaded file out of Gradio's ephemeral temp dir into
+    REFERENCE_STORE_DIR under a stable name, so it's still there to view
+    later — Gradio's own temp files aren't guaranteed to survive a restart.
+    """
+    src = Path(image_file)
+    dest = REFERENCE_STORE_DIR / f"{upload_id}__{image_type}{src.suffix or '.jpg'}"
+    shutil.copyfile(src, dest)
+    return str(dest)
+
+
+def refresh_gallery(image_type: str) -> list[tuple[str, str]]:
+    """Thumbnails of every stored reference image of one type, captioned
+    with its upload ID (+ claimed VRN if set) — lets you view the individual
+    images behind a repository-stats count, not just the total.
+    """
+    conn = db.connect(config.DEFAULT_DB_PATH)
+    rows = db.list_reference_images(conn, image_type)
+    gallery = []
+    for r in rows:
+        if not Path(r["image_path"]).is_file():
+            continue  # a pre-persistence row whose temp file is long gone
+        caption = r["upload_id"] + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else "")
+        gallery.append((r["image_path"], caption))
+    return gallery
+
+
 def run_seed(image_file, image_type, upload_id, vrn, embed_model):
     stats = refresh_repo_stats()
+    gallery = refresh_gallery(image_type)
     if not image_file:
-        return "### Upload an image first.", stats
+        return "### Upload an image first.", stats, gallery
 
     vrn = (vrn or "").strip() or None
     upload_id = (upload_id or "").strip()
@@ -355,17 +392,18 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
         client = OpenRouterClient()
         result = client.embed(model=embed_model, image_path=image_file)
     except OpenRouterInsufficientCredits as exc:
-        return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats
+        return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, gallery
     except Exception as exc:  # noqa: BLE001
-        return f"### Error\n\n{exc}", stats
+        return f"### Error\n\n{exc}", stats, gallery
 
+    stored_path = _persist_reference_image(image_file, upload_id, image_type)
     db.insert_reference_image(
-        conn, upload_id=upload_id, image_type=image_type, image_path=image_file,
+        conn, upload_id=upload_id, image_type=image_type, image_path=stored_path,
         claimed_vrn=vrn, embedding=result.vector, embed_model=result.model,
     )
     msg = (f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; "
            f"${result.cost_usd:.5f} &middot; {result.prompt_tokens} tokens")
-    return msg, refresh_repo_stats()
+    return msg, refresh_repo_stats(), refresh_gallery(image_type)
 
 
 # --- Model Catalog tab ----------------------------------------------------------
@@ -482,12 +520,18 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     sr_result_out = gr.Markdown()
                     gr.Markdown("**Repository stats**")
                     sr_stats_out = gr.Markdown(value=refresh_repo_stats)
+                    gr.Markdown("**Stored images — click one to view full size**")
+                    sr_gallery_out = gr.Gallery(
+                        value=lambda: refresh_gallery("front"), columns=3, height=320,
+                        object_fit="cover", show_label=False,
+                    )
 
             sr_file_in.change(on_seed_upload, inputs=[sr_file_in], outputs=[sr_preview, sr_filename])
+            sr_type_in.change(refresh_gallery, inputs=[sr_type_in], outputs=[sr_gallery_out])
             sr_run_btn.click(
                 run_seed,
                 inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_embed_dd],
-                outputs=[sr_result_out, sr_stats_out],
+                outputs=[sr_result_out, sr_stats_out, sr_gallery_out],
             )
 
         # --- Model Catalog -----------------------------------------------------

@@ -142,3 +142,17 @@ def reference_stats(conn: sqlite3.Connection) -> dict[str, int]:
         "SELECT image_type, COUNT(*) FROM reference_images GROUP BY image_type"
     ).fetchall()
     return dict(rows)
+
+
+def list_reference_images(conn: sqlite3.Connection, image_type: str) -> list[dict[str, Any]]:
+    """Every stored reference image of one type, newest first — for browsing/
+    viewing individually (e.g. a gallery), not for the embedding comparison
+    (see fetch_reference_embeddings for that).
+    """
+    rows = conn.execute(
+        "SELECT upload_id, image_path, claimed_vrn, created_at FROM reference_images "
+        "WHERE image_type = ? ORDER BY created_at DESC",
+        (image_type,),
+    ).fetchall()
+    return [{"upload_id": r[0], "image_path": r[1], "claimed_vrn": r[2], "created_at": r[3]}
+            for r in rows]

@@ -8,3 +8,4 @@ venv/
 *.DS_Store
 .gradio/
 *.sqlite3
+openrouter_checks/reference_images/
