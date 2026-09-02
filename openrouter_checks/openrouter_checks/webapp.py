@@ -356,27 +356,61 @@ def _persist_reference_image(image_file: str, upload_id: str, image_type: str) -
     return str(dest)
 
 
+def _reference_rows(image_type: str) -> list[dict]:
+    """Stored reference rows of one type whose file still exists on disk
+    (a pre-persistence row's Gradio temp file is long gone) — the shared
+    source for both the gallery's images and the row metadata needed to
+    map a click back to an upload_id for deletion.
+    """
+    conn = db.connect(config.DEFAULT_DB_PATH)
+    return [r for r in db.list_reference_images(conn, image_type) if Path(r["image_path"]).is_file()]
+
+
 def refresh_gallery(image_type: str) -> list[tuple[str, str]]:
     """Thumbnails of every stored reference image of one type, captioned
     with its upload ID (+ claimed VRN if set) — lets you view the individual
     images behind a repository-stats count, not just the total.
     """
+    return [(r["image_path"], r["upload_id"] + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else ""))
+            for r in _reference_rows(image_type)]
+
+
+def refresh_gallery_and_rows(image_type: str) -> tuple[list[tuple[str, str]], list[dict]]:
+    rows = _reference_rows(image_type)
+    gallery = [(r["image_path"], r["upload_id"] + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else ""))
+               for r in rows]
+    return gallery, rows
+
+
+def on_gallery_select(rows: list[dict], evt: gr.SelectData):
+    if not rows or evt.index is None or evt.index >= len(rows):
+        return "", None
+    r = rows[evt.index]
+    label = f"Selected: `{r['upload_id']}`" + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else "")
+    return label, r["upload_id"]
+
+
+def do_delete_reference(upload_id: str | None, image_type: str):
+    if not upload_id:
+        gallery, rows = refresh_gallery_and_rows(image_type)
+        return "Click an image in the gallery first, then Delete.", refresh_repo_stats(), gallery, rows, "", None
+
     conn = db.connect(config.DEFAULT_DB_PATH)
-    rows = db.list_reference_images(conn, image_type)
-    gallery = []
-    for r in rows:
-        if not Path(r["image_path"]).is_file():
-            continue  # a pre-persistence row whose temp file is long gone
-        caption = r["upload_id"] + (f" · {r['claimed_vrn']}" if r["claimed_vrn"] else "")
-        gallery.append((r["image_path"], caption))
-    return gallery
+    rows_before = db.list_reference_images(conn, image_type)
+    match = next((r for r in rows_before if r["upload_id"] == upload_id), None)
+    db.delete_reference_image(conn, upload_id, image_type)
+    if match and Path(match["image_path"]).is_file():
+        Path(match["image_path"]).unlink()
+
+    gallery, rows = refresh_gallery_and_rows(image_type)
+    return f"Deleted `{upload_id}`.", refresh_repo_stats(), gallery, rows, "", None
 
 
 def run_seed(image_file, image_type, upload_id, vrn, embed_model):
     stats = refresh_repo_stats()
-    gallery = refresh_gallery(image_type)
+    gallery, rows = refresh_gallery_and_rows(image_type)
     if not image_file:
-        return "### Upload an image first.", stats, gallery
+        return "### Upload an image first.", stats, gallery, rows
 
     vrn = (vrn or "").strip() or None
     upload_id = (upload_id or "").strip()
@@ -392,9 +426,9 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
         client = OpenRouterClient()
         result = client.embed(model=embed_model, image_path=image_file)
     except OpenRouterInsufficientCredits as exc:
-        return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, gallery
+        return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, gallery, rows
     except Exception as exc:  # noqa: BLE001
-        return f"### Error\n\n{exc}", stats, gallery
+        return f"### Error\n\n{exc}", stats, gallery, rows
 
     stored_path = _persist_reference_image(image_file, upload_id, image_type)
     db.insert_reference_image(
@@ -403,7 +437,8 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
     )
     msg = (f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; "
            f"${result.cost_usd:.5f} &middot; {result.prompt_tokens} tokens")
-    return msg, refresh_repo_stats(), refresh_gallery(image_type)
+    gallery, rows = refresh_gallery_and_rows(image_type)
+    return msg, refresh_repo_stats(), gallery, rows
 
 
 # --- Model Catalog tab ----------------------------------------------------------
@@ -520,19 +555,32 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     sr_result_out = gr.Markdown()
                     gr.Markdown("**Repository stats**")
                     sr_stats_out = gr.Markdown(value=refresh_repo_stats)
-                    gr.Markdown("**Stored images — click one to view full size**")
+                    gr.Markdown("**Stored images — click one to select, then Delete to remove it**")
                     sr_gallery_out = gr.Gallery(
-                        value=lambda: refresh_gallery("front"), columns=3, height=320,
-                        object_fit="cover", show_label=False,
+                        columns=3, height=320, object_fit="cover", show_label=False,
                     )
+                    sr_selected_label = gr.Markdown()
+                    sr_delete_btn = gr.Button("Delete selected", variant="secondary")
+                    sr_gallery_rows = gr.State([])
+                    sr_selected_id = gr.State(None)
 
             sr_file_in.change(on_seed_upload, inputs=[sr_file_in], outputs=[sr_preview, sr_filename])
-            sr_type_in.change(refresh_gallery, inputs=[sr_type_in], outputs=[sr_gallery_out])
+            sr_type_in.change(refresh_gallery_and_rows, inputs=[sr_type_in],
+                              outputs=[sr_gallery_out, sr_gallery_rows])
+            sr_gallery_out.select(on_gallery_select, inputs=[sr_gallery_rows],
+                                  outputs=[sr_selected_label, sr_selected_id])
+            sr_delete_btn.click(
+                do_delete_reference, inputs=[sr_selected_id, sr_type_in],
+                outputs=[sr_result_out, sr_stats_out, sr_gallery_out, sr_gallery_rows,
+                        sr_selected_label, sr_selected_id],
+            )
             sr_run_btn.click(
                 run_seed,
                 inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_embed_dd],
-                outputs=[sr_result_out, sr_stats_out, sr_gallery_out],
+                outputs=[sr_result_out, sr_stats_out, sr_gallery_out, sr_gallery_rows],
             )
+            demo.load(refresh_gallery_and_rows, inputs=[sr_type_in],
+                     outputs=[sr_gallery_out, sr_gallery_rows])
 
         # --- Model Catalog -----------------------------------------------------
         with gr.Tab("Model Catalog"):

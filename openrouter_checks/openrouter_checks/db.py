@@ -156,3 +156,11 @@ def list_reference_images(conn: sqlite3.Connection, image_type: str) -> list[dic
     ).fetchall()
     return [{"upload_id": r[0], "image_path": r[1], "claimed_vrn": r[2], "created_at": r[3]}
             for r in rows]
+
+
+def delete_reference_image(conn: sqlite3.Connection, upload_id: str, image_type: str) -> None:
+    conn.execute(
+        "DELETE FROM reference_images WHERE upload_id = ? AND image_type = ?",
+        (upload_id, image_type),
+    )
+    conn.commit()
