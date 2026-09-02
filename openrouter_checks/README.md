@@ -23,12 +23,19 @@ even for two photos of the same truck differing only in an edited plate:
 
 See `duplicate.py` / `imaging.py` / `siglip.py`.
 
-Two scripts, plus a Gradio front end:
+Three scripts, plus a Gradio front end:
 
 - **`scripts/check_image.py`** — runs one upload through the full gate
   sequence, logging every model call's tokens/cost/verdict to SQLite.
 - **`scripts/seed_reference.py`** — adds a known-good image (front / fastag /
   side) to the duplicate-check repository, tagged with a unique upload ID.
+- **`scripts/batch_check.py`** — runs a whole list of uploads (a CSV/Excel
+  manifest, one row per image with its claim) through the gate sequence and
+  writes the results to an Excel file, one row per image. See the script's
+  own docstring for the manifest format and output columns. A standalone
+  copy of this, trimmed down to just the checks + this script, also lives
+  in `batch_pipeline/` at the repo root — see that folder's README if you
+  want to share just the pipeline without the rest of this package.
 - **`openrouter_checks/webapp.py`** — a Gradio UI over both of the above,
   matching `vehicle_front_image_validator`'s own dark-theme test UI. Three
   tabs: **Check Image** (upload + run the gate sequence, see each step's
@@ -148,15 +155,18 @@ flowchart node by node:
    reusing the same photo under a different claimed VRN by only editing the
    plate can't dodge this check:
    - **pHash** compares Hamming distance against every reference image of
-     the same type. A duplicate needs the closest match's distance ≤
+     the same type. **Every** reference whose distance is ≤
      `DUPLICATE_HAMMING_MAX` (default `10`, out of 64 bits — lower means
-     more similar) **and** to have been filed under a *different* claimed
-     VRN — an honest re-upload under the same VRN is never flagged.
+     more similar) **and** was filed under a *different* claimed VRN counts
+     as a duplicate match, not just the single closest one — the same
+     reused photo could have been filed under more than one fraudulent
+     claim. An honest re-upload under the same VRN is never flagged.
    - If pHash comes back clean, **SigLIP** (a local vector embedding, only
      loaded at this point) runs the same same-type/different-VRN check
-     using cosine similarity against `DUPLICATE_SIGLIP_SIMILARITY_MIN`
-     (default `0.97`) instead of a Hamming distance — this is what catches
-     a duplicate pHash misses (re-crop, lighting/angle change). Reference
+     (again, every qualifying reference, not just the closest) using
+     cosine similarity against `DUPLICATE_SIGLIP_SIMILARITY_MIN` (default
+     `0.97`) instead of a Hamming distance — this is what catches a
+     duplicate pHash misses (re-crop, lighting/angle change). Reference
      images seeded before this signal existed have no vector stored yet
      and are skipped until re-seeded; pHash still covers them.
 

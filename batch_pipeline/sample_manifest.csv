@@ -1,0 +1,4 @@
+image_path,vrn,make,vehicle_type,upload_id,vision_model
+samples/truck1_front.jpg,MH12AB1234,TATA MOTORS LTD,truck,upload_001,
+samples/truck2_front.jpg,MH14CD5678,ASHOK LEYLAND,truck,upload_002,anthropic/claude-sonnet-5
+samples/bus1_front.jpg,MH20EF9012,VOLVO,bus,upload_003,
