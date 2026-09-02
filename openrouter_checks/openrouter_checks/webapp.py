@@ -381,7 +381,7 @@ def run_check_image(image_file, vrn, make, upload_id, vision_model, embed_model)
         return "### Upload an image first.", "", ""
     if not vrn or not make:
         return "### VRN and make are both required.", "", ""
-    upload_id = (upload_id or "").strip() or f"check-{vrn.strip()}-{int(time.time())}"
+    upload_id = (upload_id or "").strip() or f"check-{vrn.strip()}-{time.time_ns()}"
 
     conn = db.connect(config.DEFAULT_DB_PATH)
     try:
@@ -512,7 +512,7 @@ def run_seed(image_file, image_type, upload_id, vrn, embed_model):
         # default (re-seeding the same VRN's front image replaces it, rather
         # than piling up duplicates), falling back to a timestamp if even
         # the VRN was left blank.
-        upload_id = f"ref-{vrn}-{image_type}" if vrn else f"ref-{image_type}-{int(time.time())}"
+        upload_id = f"ref-{vrn}-{image_type}" if vrn else f"ref-{image_type}-{time.time_ns()}"
 
     conn = db.connect(config.DEFAULT_DB_PATH)
     try:
