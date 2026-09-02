@@ -1,9 +1,16 @@
 requests>=2.31
 python-dotenv>=1.0
-gradio>=4.0,<5.0
-# gradio 4.x still imports huggingface_hub.HfFolder, removed in huggingface_hub
-# 1.0 — pin below that or gradio's import fails at startup.
-huggingface_hub<1.0
+# Deliberately unpinned upper bound: gradio 4.44.1 (the last release
+# compatible with Python <3.10) only declares loose lower-bound
+# dependencies (fastapi<1.0, pydantic>=2.0, jinja2<4.0, ...) and breaks
+# against today's fastapi/pydantic/jinja2/huggingface_hub releases —
+# missing HfFolder, "unhashable type: dict" in template rendering,
+# TypeError in gradio_client's schema walker. None of that happens on a
+# current gradio (5.x/6.x, needs Python >=3.10) — its own pins track the
+# modern stack. So: run this on Python 3.10+ and let pip resolve the
+# latest gradio, rather than pinning gradio<5.0 to "fix" an unrelated
+# problem, which just forces the broken old combination back in.
+gradio>=4.0
 Pillow>=10.0
 
 # Pure-logic VRN/maker matching, reused from the sibling package instead of

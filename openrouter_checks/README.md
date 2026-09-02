@@ -53,9 +53,14 @@ catalog" — appends it to `models.json` for you.
 
 ## Setup
 
+Needs **Python 3.11+** (`truck_extract_match` requires it, and it also keeps
+you on a `gradio` release recent enough to resolve cleanly against today's
+`fastapi`/`pydantic` — see the comment in `requirements.txt` if you're stuck
+on an older Python and the webapp fails to start).
+
 ```bash
 cd openrouter_checks
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e ../truck_extract_match   # pure-logic VRN/maker matching, reused not re-derived
 

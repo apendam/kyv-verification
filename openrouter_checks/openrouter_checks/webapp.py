@@ -317,7 +317,7 @@ def do_add_to_catalog(model_id: str, label: str, is_vision: bool, is_embedding: 
 
 # --- UI --------------------------------------------------------------------------
 
-with gr.Blocks(title="KYV · OpenRouter Checks") as demo:
+with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUSTOM_CSS) as demo:
     gr.Markdown(
         "# KYV · OpenRouter Checks\n"
         "Front-image gate sequence, run against OpenRouter — model swappable per run. "
@@ -412,4 +412,4 @@ with gr.Blocks(title="KYV · OpenRouter Checks") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(theme=gr.themes.Base(), css=CUSTOM_CSS)
+    demo.launch()
