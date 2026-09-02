@@ -1,0 +1,7 @@
+requests>=2.31
+python-dotenv>=1.0
+
+# Pure-logic VRN/maker matching, reused from the sibling package instead of
+# re-deriving fuzzy-match rules here. Installed separately (see README) since
+# it's a local path dependency, not a PyPI package:
+#   pip install -e ../truck_extract_match
