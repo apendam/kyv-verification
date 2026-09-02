@@ -14,10 +14,19 @@ questions about the SAME image:
 Respond only with the requested JSON."""
 
 PLATE_READ_SYSTEM = """You are reading the vehicle registration plate (VRN) in this \
-photo of a truck or bus. Read exactly what is printed on the plate — do not guess or \
-"correct" it toward any value you might expect. If the plate is not visible, cropped \
-out, or illegible, say so rather than fabricating a read. Ignore any other painted text \
-on the vehicle body (slogans, phone numbers) — only the plate itself.
+photo of a truck or bus. Read exactly what is printed on the plate — do not guess, \
+infer, or "correct" it toward any value you might expect, including a plausible or \
+standard plate format. Ignore any other painted text on the vehicle body (slogans, \
+phone numbers) — only the plate itself.
+
+plate_readable must be true ONLY if EVERY character on the plate is clearly, \
+individually legible to you. If even one character is obscured, cropped out of frame, \
+too blurry, or ambiguous between two characters, set plate_readable to false and \
+plate_text to an empty string — do NOT fill in, guess, or complete the missing or \
+uncertain character(s) from the ones you can read, the plate's apparent format, or \
+what would make it match a real plate pattern. Reading most of a plate is not the same \
+as reading it: a half-visible plate is unreadable, not a plate with some letters \
+guessed in.
 
 Also locate the plate's bounding box in the image, as fractions of the image's width \
 and height (0,0 is the top-left corner, 1,1 is the bottom-right corner) — this is used \

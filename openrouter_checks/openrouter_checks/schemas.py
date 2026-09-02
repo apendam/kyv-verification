@@ -31,10 +31,20 @@ FRONT_IMAGE_SCHEMA: dict = {
 PLATE_READ_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "plate_readable": {"type": "boolean", "description": "False if no plate is legible at all."},
+        "plate_readable": {
+            "type": "boolean",
+            "description": (
+                "False unless EVERY character on the plate is individually legible. False for a "
+                "partially-visible, cropped, angled, or blurry plate even if most characters are "
+                "readable -- never true from completing/guessing the rest."
+            ),
+        },
         "plate_text": {
             "type": "string",
-            "description": "Best-effort plate read, uppercase, no spaces/punctuation. Empty string if unreadable.",
+            "description": (
+                "The plate exactly as read, uppercase, no spaces/punctuation. Empty string "
+                "whenever plate_readable is false -- never a partial or guessed value."
+            ),
         },
         "confidence": {"type": "number", "description": "0-1 confidence in plate_text."},
         "reasoning": {"type": "string"},
