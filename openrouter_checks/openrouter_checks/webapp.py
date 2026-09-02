@@ -29,7 +29,10 @@ from . import config, db, models
 from .client import OpenRouterClient, OpenRouterInsufficientCredits
 from .gate_sequence import run_gate_sequence
 
-# --- theme (copied verbatim from vfiv/webapp.py — the authoritative design) ---
+# --- theme: light, macOS-native (System Settings / Finder style) -------------
+# No webfont import -- -apple-system/BlinkMacSystemFont resolve to the real
+# SF Pro on macOS/Safari/Chrome, which is a better "feels native" win than
+# any web font could be, and drops an external network dependency.
 
 _BB_CRIMSON = "#d71e48"
 _BB_CRIMSON_DARK = "#a8152f"
@@ -41,29 +44,39 @@ _DECISION_STYLE = {
     "MANUAL_REVIEW": (_BB_YELLOW, "#000"),
 }
 
-CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700&display=swap');
+TITLEBAR_HTML = """
+<div style="display:flex; align-items:center; gap:8px; padding:10px 16px;
+            background:#e8e8ed; border-radius:10px 10px 0 0; margin:-1px -1px 0;
+            border-bottom:1px solid #d2d2d7;">
+  <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57;display:inline-block;"></span>
+  <span style="width:12px;height:12px;border-radius:50%;background:#febc2e;display:inline-block;"></span>
+  <span style="width:12px;height:12px;border-radius:50%;background:#28c840;display:inline-block;"></span>
+</div>
+"""
 
+CUSTOM_CSS = """
 :root {
-    --bb-black: #0a0a0a;
-    --bb-panel: #151515;
-    --bb-panel-2: #1e1e1e;
-    --bb-white: #ffffff;
-    --bb-muted: #a8a8a8;
+    --bb-black: #f5f5f7;
+    --bb-panel: #ffffff;
+    --bb-panel-2: #f5f5f7;
+    --bb-white: #1d1d1f;
+    --bb-muted: #6e6e73;
     --bb-turquoise: #d71e48;
     --bb-turquoise-dark: #a8152f;
-    --bb-border: #2a2a2a;
+    --bb-border: #d2d2d7;
+    --mac-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
 }
 
 .gradio-container {
     background: var(--bb-black) !important;
     color: var(--bb-white) !important;
-    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif !important;
 }
 
 .gradio-container h1, .gradio-container h2, .gradio-container h3 {
-    font-family: 'Archivo Black', 'Inter', sans-serif !important;
-    letter-spacing: -0.01em;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: 0 !important;
     color: var(--bb-white) !important;
 }
 
@@ -77,67 +90,110 @@ CUSTOM_CSS = """
 .gradio-container .prose code {
     color: var(--bb-turquoise) !important;
     background: var(--bb-panel-2) !important;
+    border-radius: 4px !important;
 }
 
 .gradio-container .block, .gradio-container .form {
     background: var(--bb-panel) !important;
     border: 1px solid var(--bb-border) !important;
-    border-radius: 14px !important;
+    border-radius: 12px !important;
+    box-shadow: var(--mac-shadow) !important;
 }
 
 .gradio-container label.float, .gradio-container .float,
 .gradio-container [data-testid="block-label"] {
-    background: var(--bb-panel-2) !important;
-    color: var(--bb-white) !important;
+    background: transparent !important;
+    color: var(--bb-muted) !important;
 }
 
+/* Top tab row restyled as a macOS toolbar segmented control rather than an
+   underlined web tab bar. */
+.gradio-container .tab-container[role="tablist"] {
+    background: #e8e8ed !important;
+    border-radius: 8px !important;
+    padding: 3px !important;
+    gap: 0 !important;
+    display: inline-flex !important;
+}
 .gradio-container button[role="tab"] {
     color: var(--bb-muted) !important;
-    font-weight: 600 !important;
+    font-weight: 500 !important;
+    border-radius: 6px !important;
+    padding: 5px 14px !important;
+    margin: 0 !important;
 }
 .gradio-container button[role="tab"].selected {
-    color: var(--bb-turquoise) !important;
-    border-bottom: 2px solid var(--bb-turquoise) !important;
+    color: var(--bb-white) !important;
+    background: #ffffff !important;
+    box-shadow: var(--mac-shadow) !important;
+}
+/* Gradio paints the selected-tab indicator as a blue ::after bar (not a
+   border), which the .selected rule above never reaches — the white chip
+   background already shows which tab is active, so just hide it. */
+.gradio-container button[role="tab"].selected::after {
+    background: transparent !important;
 }
 
 .gradio-container input:not([type=radio]):not([type=checkbox]),
 .gradio-container textarea, .gradio-container select {
-    background: var(--bb-panel-2) !important;
+    background: #ffffff !important;
     color: var(--bb-white) !important;
     border: 1px solid var(--bb-border) !important;
-    border-radius: 10px !important;
+    border-radius: 8px !important;
+}
+.gradio-container input:not([type=radio]):not([type=checkbox]):focus,
+.gradio-container textarea:focus {
+    border-color: var(--bb-turquoise) !important;
+    outline: 2px solid color-mix(in srgb, var(--bb-turquoise) 25%, transparent) !important;
+    outline-offset: 0 !important;
 }
 
-/* Radio/checkbox inputs render as small custom-shaped boxes (Gradio applies
-   its own appearance:none + border-radius), so forcing the same flat
-   background via the generic `input` rule above erased the only visual cue
-   telling checked apart from unchecked -- every option in a gr.Radio looked
-   like an identical filled dot regardless of which one was selected. */
+/* Radio group restyled as a macOS segmented control (one pill track, the
+   selected option gets a white "chip" with a soft shadow) instead of the
+   default row of separately-bordered pills. */
+.gradio-container fieldset .wrap {
+    background: #e8e8ed !important;
+    border-radius: 8px !important;
+    padding: 3px !important;
+    display: inline-flex !important;
+    gap: 0 !important;
+}
+.gradio-container fieldset label {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 5px 14px !important;
+    color: var(--bb-muted) !important;
+}
+.gradio-container fieldset label.selected {
+    background: #ffffff !important;
+    color: var(--bb-white) !important;
+    box-shadow: var(--mac-shadow) !important;
+}
 .gradio-container input[type=radio], .gradio-container input[type=checkbox] {
     accent-color: var(--bb-turquoise) !important;
-    background: var(--bb-panel-2) !important;
-    border: 1px solid var(--bb-border) !important;
 }
+/* accent-color alone isn't enough — Gradio's own :checked rule sets
+   background-color directly (its default blue) with equal or higher
+   specificity, so the painted dot stayed blue regardless of accent-color. */
 .gradio-container input[type=radio]:checked, .gradio-container input[type=checkbox]:checked {
-    background: var(--bb-turquoise) !important;
+    background-color: var(--bb-turquoise) !important;
     border-color: var(--bb-turquoise) !important;
-}
-.gradio-container label.selected {
-    border-color: var(--bb-turquoise) !important;
-    color: var(--bb-white) !important;
 }
 
 .gradio-container ul.options {
-    background: var(--bb-panel-2) !important;
+    background: #ffffff !important;
     border: 1px solid var(--bb-border) !important;
+    border-radius: 8px !important;
+    box-shadow: var(--mac-shadow) !important;
 }
 .gradio-container ul.options li.item {
     color: var(--bb-white) !important;
-    background: var(--bb-panel-2) !important;
+    background: #ffffff !important;
 }
 .gradio-container ul.options li.item.selected,
 .gradio-container ul.options li.item.active {
-    background: var(--bb-panel-2) !important;
+    background: #f5f5f7 !important;
     color: var(--bb-white) !important;
 }
 .gradio-container ul.options li.item:hover {
@@ -149,8 +205,9 @@ CUSTOM_CSS = """
     background: var(--bb-turquoise) !important;
     color: #fff !important;
     border: none !important;
-    border-radius: 999px !important;
-    font-weight: 700 !important;
+    border-radius: 7px !important;
+    font-weight: 600 !important;
+    box-shadow: var(--mac-shadow) !important;
 }
 .gradio-container button.primary:hover {
     background: var(--bb-turquoise-dark) !important;
@@ -180,10 +237,11 @@ CUSTOM_CSS = """
 }
 
 .gradio-container button.secondary {
-    background: transparent !important;
+    background: #ffffff !important;
     color: var(--bb-white) !important;
     border: 1px solid var(--bb-border) !important;
-    border-radius: 999px !important;
+    border-radius: 7px !important;
+    box-shadow: var(--mac-shadow) !important;
 }
 """
 
@@ -367,6 +425,7 @@ def do_add_to_catalog(model_id: str, label: str, is_vision: bool, is_embedding: 
 # --- UI --------------------------------------------------------------------------
 
 with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUSTOM_CSS) as demo:
+    gr.HTML(TITLEBAR_HTML)
     gr.Markdown(
         "# KYV · OpenRouter Checks\n"
         "Front-image gate sequence, run against OpenRouter — model swappable per run. "
