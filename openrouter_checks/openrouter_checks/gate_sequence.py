@@ -154,22 +154,23 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
         # else "match" -> fall through
 
     # -- 4. Duplicate check (last gate, only on the would-approve path) -------
-    # Local perceptual-hash comparison -- no model call, no cost, so there's
-    # no OpenRouterError path here the way every other step has one.
+    # Local pHash + (fallback) SigLIP comparison -- no model call, no cost,
+    # so there's no OpenRouterError path here the way every other step has one.
     try:
         dup_result = duplicate.check_duplicate(
             conn, image_path=str(image_path), image_type="front",
             claimed_vrn=claimed_vrn, exclude_upload_id=upload_id, plate_bbox=plate_bbox,
         )
     except Exception as exc:  # noqa: BLE001 - a bad/corrupt image file, most likely
-        _log(conn, upload_id, "duplicate_check", "local:phash", "technical_failure",
+        _log(conn, upload_id, "duplicate_check", "local:duplicate_check", "technical_failure",
              {"error": str(exc)}, technical_failure=True)
         return finish("MANUAL_REVIEW", "duplicate check: technical failure")
 
-    _log(conn, upload_id, "duplicate_check", "local:phash",
+    _log(conn, upload_id, "duplicate_check", f"local:{dup_result.signal}",
          "duplicate" if dup_result.is_duplicate else "clean",
-         {"best_match_upload_id": dup_result.best_match_upload_id,
-          "best_match_hamming_distance": dup_result.best_match_hamming_distance,
+         {"signal": dup_result.signal,
+          "best_match_upload_id": dup_result.best_match_upload_id,
+          "best_match_score": dup_result.best_match_score,
           "reason": dup_result.reason})
     steps.append({"check": "duplicate_check", "outcome": dup_result.reason})
 

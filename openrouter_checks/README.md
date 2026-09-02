@@ -8,12 +8,20 @@ rather than reusing the SigLIP+pgvector system already in
 Model choice is a flag everywhere, not a constant, so you can swap between
 providers per run.
 
-The duplicate check itself is a **local perceptual hash (pHash)**, not an
-OpenRouter embedding — an embedding from a general-purpose multimodal model
-didn't cluster near a clean threshold even for two photos of the same truck
-differing only in an edited plate, and pHash is a better-suited, free,
-deterministic tool for "is this the same photo, maybe re-cropped/edited."
-See `duplicate.py` / `imaging.py`.
+The duplicate check runs over two **local, free** signals, cheapest first —
+not an OpenRouter embedding, which didn't cluster near a clean threshold
+even for two photos of the same truck differing only in an edited plate:
+
+1. **pHash** (perceptual hash) — instant, no model to load, catches a
+   near-pixel-identical reupload (same photo, maybe recompressed/lightly
+   edited).
+2. **SigLIP** (local vector embedding, same weights `vehicle_front_image_
+   validator/` already uses for its own duplicate check) — only runs when
+   pHash comes back clean, since it needs a model loaded via
+   `transformers`/`torch`. Catches what pHash misses: a re-crop, a
+   lighting/angle change.
+
+See `duplicate.py` / `imaging.py` / `siglip.py`.
 
 Two scripts, plus a Gradio front end:
 
@@ -121,14 +129,21 @@ flowchart node by node:
    never reject on its own).
 4. **Duplicate check** — only runs on the path that would otherwise approve.
    Blacks out the plate (using the bounding box the VRN check already read —
-   no extra model call), hashes what's left with a local perceptual hash,
-   and compares its Hamming distance against every reference image of the
-   same type. Flags a duplicate only when the closest match's distance is ≤
-   `DUPLICATE_HAMMING_MAX` (default `10`, out of 64 bits — lower means more
-   similar) **and** was filed under a *different* claimed VRN — an honest
-   re-upload under the same VRN is never flagged. Masking the plate first
-   means reusing the same photo under a different claimed VRN by only
-   editing the plate can't dodge this check.
+   no extra model call) before either signal below ever sees the image, so
+   reusing the same photo under a different claimed VRN by only editing the
+   plate can't dodge this check:
+   - **pHash** compares Hamming distance against every reference image of
+     the same type. A duplicate needs the closest match's distance ≤
+     `DUPLICATE_HAMMING_MAX` (default `10`, out of 64 bits — lower means
+     more similar) **and** to have been filed under a *different* claimed
+     VRN — an honest re-upload under the same VRN is never flagged.
+   - If pHash comes back clean, **SigLIP** (a local vector embedding, only
+     loaded at this point) runs the same same-type/different-VRN check
+     using cosine similarity against `DUPLICATE_SIGLIP_SIMILARITY_MIN`
+     (default `0.97`) instead of a Hamming distance — this is what catches
+     a duplicate pHash misses (re-crop, lighting/angle change). Reference
+     images seeded before this signal existed have no vector stored yet
+     and are skipped until re-seeded; pHash still covers them.
 
 Every step is logged to the `checks` table regardless of outcome, including a
 `technical_failure` flag (API error, malformed response, exhausted retries) —
@@ -165,10 +180,10 @@ pass `--force` — see `db.already_checked`.
   invocation; wrap it in a shell loop or extend it if you need to run a
   folder overnight — worth adding real rate-limiting before you do, rather
   than firing requests as fast as the loop allows.
-- **`DUPLICATE_HAMMING_MAX` (default `10`) is a starting point, not a
-  calibrated value.** Test it against your own labeled pairs (known
-  duplicates vs. known-different vehicles) and adjust in
-  `openrouter_checks/config.py`.
+- **`DUPLICATE_HAMMING_MAX` (default `10`) and `DUPLICATE_SIGLIP_SIMILARITY_MIN`
+  (default `0.97`) are starting points, not calibrated values.** Test both
+  against your own labeled pairs (known duplicates vs. known-different
+  vehicles) and adjust in `openrouter_checks/config.py`.
 - **Linear-scan Hamming-distance search.** Fine up to tens of thousands of
   reference images; past that, an indexed nearest-neighbor structure would
   be the next step.

@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS reference_images (
     image_path TEXT NOT NULL,
     claimed_vrn TEXT,
     phash TEXT NOT NULL,            -- local perceptual hash (imagehash.phash), as hex
+    siglip_embedding BLOB,          -- packed float32 SigLIP vector (see pack_embedding); NULL until seeded
     created_at REAL NOT NULL,
     PRIMARY KEY (upload_id, image_type)
 );
@@ -58,17 +59,28 @@ CREATE INDEX IF NOT EXISTS idx_ref_type ON reference_images(image_type);
 
 
 def _migrate_reference_images(conn: sqlite3.Connection) -> None:
-    """The duplicate check used to store an OpenRouter embedding per
-    reference image; it now stores a local perceptual hash instead (see
-    imaging.py / duplicate.py) -- a different signal entirely, so an
-    embedding-schema row can't be reused under the new comparison. A table
-    from before this change is dropped and recreated with the new schema
-    rather than migrated in place; this is a duplicate-detection corpus you
-    rebuild by re-seeding, not an irreplaceable record.
+    """Two migrations, applied in order:
+
+    1. The duplicate check used to store an OpenRouter embedding per
+       reference image; it now stores a local perceptual hash instead (see
+       imaging.py / duplicate.py) -- a different signal entirely, so an
+       embedding-schema row can't be reused under the new comparison. A
+       table from before this change is dropped and recreated with the new
+       schema rather than migrated in place; this is a duplicate-detection
+       corpus you rebuild by re-seeding, not an irreplaceable record.
+    2. Adding the SigLIP vector as a *second* signal (still fully additive
+       to pHash, see duplicate.py) doesn't need that treatment -- existing
+       rows just get a NULL siglip_embedding until re-seeded, and the
+       duplicate check already skips rows with no embedding for that signal.
+       A plain ADD COLUMN, no data loss.
     """
     cols = [row[1] for row in conn.execute("PRAGMA table_info(reference_images)").fetchall()]
     if cols and "phash" not in cols:
         conn.execute("DROP TABLE reference_images")
+        conn.commit()
+        cols = []
+    if cols and "siglip_embedding" not in cols:
+        conn.execute("ALTER TABLE reference_images ADD COLUMN siglip_embedding BLOB")
         conn.commit()
 
 
@@ -113,12 +125,26 @@ def already_checked(conn: sqlite3.Connection, upload_id: str) -> bool:
 
 # -- reference-image repository (duplicate-check corpus) ---------------------
 
+def pack_embedding(vector) -> bytes:
+    """A SigLIP vector as raw float32 bytes -- simple, fixed-width, no extra
+    dependency (json/pickle would both work but are slower and less compact
+    for a plain float array)."""
+    import numpy as np
+    return np.asarray(vector, dtype="float32").tobytes()
+
+
+def unpack_embedding(blob: bytes):
+    import numpy as np
+    return np.frombuffer(blob, dtype="float32")
+
+
 def insert_reference_image(conn: sqlite3.Connection, *, upload_id: str, image_type: str,
-                            image_path: str, claimed_vrn: str | None, phash: str) -> None:
+                            image_path: str, claimed_vrn: str | None, phash: str,
+                            siglip_embedding: bytes | None = None) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO reference_images (upload_id, image_type, image_path, "
-        "claimed_vrn, phash, created_at) VALUES (?,?,?,?,?,?)",
-        (upload_id, image_type, image_path, claimed_vrn, phash, time.time()),
+        "claimed_vrn, phash, siglip_embedding, created_at) VALUES (?,?,?,?,?,?,?)",
+        (upload_id, image_type, image_path, claimed_vrn, phash, siglip_embedding, time.time()),
     )
     conn.commit()
 
@@ -139,6 +165,22 @@ def fetch_reference_phashes(conn: sqlite3.Connection, image_type: str,
     return conn.execute(q, params).fetchall()
 
 
+def fetch_reference_siglip_embeddings(conn: sqlite3.Connection, image_type: str,
+                                       exclude_upload_id: str | None = None
+                                       ) -> list[tuple[str, bytes, str | None]]:
+    """Returns [(upload_id, packed_embedding, claimed_vrn), ...] for one
+    image_type, skipping rows seeded before the SigLIP signal existed (NULL
+    siglip_embedding) -- same linear-scan caveat as fetch_reference_phashes.
+    """
+    q = ("SELECT upload_id, siglip_embedding, claimed_vrn FROM reference_images "
+         "WHERE image_type = ? AND siglip_embedding IS NOT NULL")
+    params: list[Any] = [image_type]
+    if exclude_upload_id is not None:
+        q += " AND upload_id != ?"
+        params.append(exclude_upload_id)
+    return conn.execute(q, params).fetchall()
+
+
 def reference_stats(conn: sqlite3.Connection) -> dict[str, int]:
     rows = conn.execute(
         "SELECT image_type, COUNT(*) FROM reference_images GROUP BY image_type"
@@ -152,12 +194,13 @@ def list_reference_images(conn: sqlite3.Connection, image_type: str) -> list[dic
     (see fetch_reference_phashes for that).
     """
     rows = conn.execute(
-        "SELECT upload_id, image_path, claimed_vrn, phash, created_at FROM reference_images "
-        "WHERE image_type = ? ORDER BY created_at DESC",
+        "SELECT upload_id, image_path, claimed_vrn, phash, siglip_embedding, created_at "
+        "FROM reference_images WHERE image_type = ? ORDER BY created_at DESC",
         (image_type,),
     ).fetchall()
     return [{"upload_id": r[0], "image_path": r[1], "claimed_vrn": r[2], "phash": r[3],
-             "created_at": r[4], "image_type": image_type} for r in rows]
+             "has_siglip_embedding": r[4] is not None, "created_at": r[5],
+             "image_type": image_type} for r in rows]
 
 
 def delete_reference_image(conn: sqlite3.Connection, upload_id: str, image_type: str) -> None:

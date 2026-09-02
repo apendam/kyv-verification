@@ -518,10 +518,12 @@ def open_preview(rows: list[dict], idx: int):
     if idx >= len(rows):
         return gr.update(visible=False), None, ""
     r = rows[idx]
+    vector_line = "stored" if r.get("has_siglip_embedding") else "not stored (re-seed to add)"
     info = (f"**Upload ID:** `{r['upload_id']}`  \n"
             f"**Type:** {r['image_type']}  \n"
             f"**Claimed VRN:** {r['claimed_vrn'] or '—'}  \n"
             f"**Perceptual hash:** `{r['phash']}`  \n"
+            f"**Vector embedding:** {vector_line}  \n"
             f"**Added:** {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['created_at']))}")
     return gr.update(visible=True), r["image_path"], info
 
@@ -598,14 +600,27 @@ def run_seed(image_file, image_type, upload_id, vrn, vision_model):
     except Exception as exc:  # noqa: BLE001
         return f"### Error\n\n{exc}", stats, *row_updates
 
+    # SigLIP is the duplicate check's fallback signal (see duplicate.py) --
+    # computed and stored here so it's ready the moment a later upload's
+    # pHash comes back clean. A failure (model download issue, torch not
+    # installed) just leaves this reference with no vector signal rather
+    # than failing the seed -- pHash alone still works for it.
+    siglip_embedding = None
+    try:
+        vector = duplicate.compute_siglip_embedding(image_file, plate_bbox)
+        siglip_embedding = db.pack_embedding(vector)
+    except Exception:  # noqa: BLE001
+        pass
+
     # The ORIGINAL (unmasked) upload is what gets stored/previewed -- only
-    # the hash computation ever sees the plate-masked version.
+    # the hash/embedding computation ever sees the plate-masked version.
     stored_path = _persist_reference_image(image_file, upload_id, image_type)
     db.insert_reference_image(
         conn, upload_id=upload_id, image_type=image_type, image_path=stored_path,
-        claimed_vrn=vrn, phash=phash,
+        claimed_vrn=vrn, phash=phash, siglip_embedding=siglip_embedding,
     )
-    msg = f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; phash `{phash}`"
+    vector_note = "vector embedding stored" if siglip_embedding else "vector embedding unavailable"
+    msg = f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; phash `{phash}` &middot; {vector_note}"
     return msg, refresh_repo_stats(), *refresh_row_list(image_type)
 
 

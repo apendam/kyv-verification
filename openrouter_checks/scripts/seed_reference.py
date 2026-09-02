@@ -61,11 +61,19 @@ def seed_one(conn, client: OpenRouterClient, *, image_path: str, image_type: str
         raise FileNotFoundError(image_path)
     plate_bbox = _locate_plate_bbox(client, image_path, vision_model)
     phash = str(duplicate.compute_phash(image_path, plate_bbox))
+
+    siglip_embedding = None
+    try:
+        siglip_embedding = db.pack_embedding(duplicate.compute_siglip_embedding(image_path, plate_bbox))
+    except Exception:  # noqa: BLE001 - torch/transformers missing, or model download failed
+        print(f"warning: no vector embedding for {upload_id} (pHash alone still works)", file=sys.stderr)
+
     db.insert_reference_image(
         conn, upload_id=upload_id, image_type=image_type, image_path=image_path,
-        claimed_vrn=vrn, phash=phash,
+        claimed_vrn=vrn, phash=phash, siglip_embedding=siglip_embedding,
     )
-    print(f"seeded {upload_id} [{image_type}] <- {image_path} (phash {phash})")
+    print(f"seeded {upload_id} [{image_type}] <- {image_path} (phash {phash}, "
+          f"vector {'stored' if siglip_embedding else 'unavailable'})")
 
 
 def main() -> None:

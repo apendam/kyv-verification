@@ -19,6 +19,13 @@ OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.
 # vision-capable model from https://openrouter.ai/models.
 DEFAULT_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "anthropic/claude-sonnet-5")
 
+# Local vector-embedding model for the duplicate check's second signal (see
+# siglip.py / duplicate.py) — not an OpenRouter model id, a HuggingFace one,
+# downloaded and run locally the first time it's needed. Same weights
+# vehicle_front_image_validator/ already uses for its own duplicate check.
+SIGLIP_MODEL = os.environ.get("KYV_SIGLIP_MODEL", "google/siglip2-base-patch16-512")
+SIGLIP_DEVICE = os.environ.get("KYV_SIGLIP_DEVICE", "cuda")  # resolves to mps/cpu when unavailable
+
 # --- storage ----------------------------------------------------------------
 DEFAULT_DB_PATH = Path(os.environ.get("KYV_DB_PATH", "kyv_checks.sqlite3"))
 
@@ -40,6 +47,14 @@ VRN_SIMILAR_CHAR_MAX_DISTANCE = 3
 # treat it as a starting point, not a calibrated value — tune against your
 # own labeled pairs.
 DUPLICATE_HAMMING_MAX = 10
+
+# Second duplicate-detection signal, only run when pHash doesn't already flag
+# a duplicate (SigLIP catches near-duplicates pHash misses — a re-crop, a
+# lighting/angle change — but is much more expensive to run, so it's a
+# fallback, not a first pass). Same 0.97 cosine-similarity starting point
+# vehicle_front_image_validator/'s own SigLIP-based duplicate check uses —
+# equally uncalibrated here; tune against your own labeled pairs.
+DUPLICATE_SIGLIP_SIMILARITY_MIN = float(os.environ.get("KYV_DUPLICATE_SIGLIP_SIMILARITY_MIN", "0.97"))
 
 # --- HTTP behaviour ----------------------------------------------------------
 REQUEST_TIMEOUT_S = 60
