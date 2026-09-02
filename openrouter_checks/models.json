@@ -1,0 +1,9 @@
+{
+  "models": [
+    {"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5", "vision": true, "embedding": false},
+    {"id": "anthropic/claude-opus-5", "label": "Claude Opus 5", "vision": true, "embedding": false},
+    {"id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vision": true, "embedding": false},
+    {"id": "openai/gpt-4o", "label": "GPT-4o", "vision": true, "embedding": false},
+    {"id": "nvidia/llama-nemotron-embed-vl-1b-v2", "label": "NVIDIA Nemotron Embed VL 1B", "vision": false, "embedding": true}
+  ]
+}

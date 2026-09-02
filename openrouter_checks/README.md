@@ -8,15 +8,48 @@ already in `vehicle_front_image_validator/`, so there's no database server to
 stand up. Model choice is a flag everywhere, not a constant, so you can swap
 between providers per run.
 
-Two scripts:
+Two scripts, plus a Gradio front end:
 
 - **`scripts/check_image.py`** — runs one upload through the full gate
   sequence, logging every model call's tokens/cost/verdict to SQLite.
 - **`scripts/seed_reference.py`** — adds a known-good image (front / fastag /
   side) to the duplicate-check repository, tagged with a unique upload ID.
+- **`openrouter_checks/webapp.py`** — a Gradio UI over both of the above,
+  matching `vehicle_front_image_validator`'s own dark-theme test UI. Three
+  tabs: **Check Image** (upload + run the gate sequence, see each step's
+  verdict and the running token/cost total), **Seed Reference** (upload a
+  known-good image into the duplicate-check corpus), **Model Catalog**
+  (`models.json`, plus a "verify against OpenRouter" lookup for a typed-in
+  model id before you use it). Run with:
 
-Both write to the same SQLite file (`kyv_checks.sqlite3` by default) — one
-file, no hardware deployment.
+  ```bash
+  python -m openrouter_checks.webapp
+  ```
+
+Both scripts and the webapp write to the same SQLite file
+(`kyv_checks.sqlite3` by default) — one file, no hardware deployment.
+
+## Model catalog (`models.json`)
+
+The webapp's "Vision model" / "Embedding model" dropdowns are populated from
+`models.json` (repo root of this package) — a plain list you maintain by
+hand:
+
+```json
+{
+  "models": [
+    {"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5", "vision": true, "embedding": false},
+    {"id": "nvidia/llama-nemotron-embed-vl-1b-v2", "label": "NVIDIA Nemotron Embed VL 1B", "vision": false, "embedding": true}
+  ]
+}
+```
+
+Edit it directly to add/remove entries, or use the **Model Catalog** tab's
+"Verify against OpenRouter" box: it calls OpenRouter's public
+`GET /api/v1/models` catalog endpoint (no API key spent — it's an
+unauthenticated read), confirms the id is real, shows its pricing and input
+modalities, and — once you tick vision/embedding and click "Add to
+catalog" — appends it to `models.json` for you.
 
 ## Setup
 

@@ -1,5 +1,7 @@
 requests>=2.31
 python-dotenv>=1.0
+gradio>=4.0
+Pillow>=10.0
 
 # Pure-logic VRN/maker matching, reused from the sibling package instead of
 # re-deriving fuzzy-match rules here. Installed separately (see README) since
