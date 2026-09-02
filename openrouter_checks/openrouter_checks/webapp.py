@@ -95,11 +95,31 @@ CUSTOM_CSS = """
     border-bottom: 2px solid var(--bb-turquoise) !important;
 }
 
-.gradio-container input, .gradio-container textarea, .gradio-container select {
+.gradio-container input:not([type=radio]):not([type=checkbox]),
+.gradio-container textarea, .gradio-container select {
     background: var(--bb-panel-2) !important;
     color: var(--bb-white) !important;
     border: 1px solid var(--bb-border) !important;
     border-radius: 10px !important;
+}
+
+/* Radio/checkbox inputs render as small custom-shaped boxes (Gradio applies
+   its own appearance:none + border-radius), so forcing the same flat
+   background via the generic `input` rule above erased the only visual cue
+   telling checked apart from unchecked -- every option in a gr.Radio looked
+   like an identical filled dot regardless of which one was selected. */
+.gradio-container input[type=radio], .gradio-container input[type=checkbox] {
+    accent-color: var(--bb-turquoise) !important;
+    background: var(--bb-panel-2) !important;
+    border: 1px solid var(--bb-border) !important;
+}
+.gradio-container input[type=radio]:checked, .gradio-container input[type=checkbox]:checked {
+    background: var(--bb-turquoise) !important;
+    border-color: var(--bb-turquoise) !important;
+}
+.gradio-container label.selected {
+    border-color: var(--bb-turquoise) !important;
+    color: var(--bb-white) !important;
 }
 
 .gradio-container ul.options {
