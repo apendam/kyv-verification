@@ -278,12 +278,55 @@ CUSTOM_CSS = """
     box-shadow: none !important;
     padding: 24px !important;
 }
-#sr-preview-modal > * {
-    max-width: 560px !important;
+/* The window itself -- one fused card (title bar + image + info) with a
+   single shadow and continuous rounded corners, rather than three
+   separately-boxed Gradio blocks stacked with gaps between them. */
+#sr-preview-window {
+    background: #ffffff !important;
+    border-radius: 12px !important;
+    overflow: hidden !important;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.4) !important;
+    max-width: 480px !important;
     width: 100% !important;
 }
-#sr-preview-modal .block {
-    box-shadow: 0 20px 60px rgba(0,0,0,0.3) !important;
+#sr-preview-window .block {
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+}
+#sr-preview-titlebar {
+    background: #e8e8ed !important;
+    padding: 10px 10px 10px 16px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    border-bottom: 1px solid var(--bb-border) !important;
+    gap: 8px !important;
+}
+#sr-preview-close {
+    width: 26px !important;
+    height: 26px !important;
+    min-width: 26px !important;
+    max-width: 26px !important;
+    border-radius: 50% !important;
+    background: #ff5f57 !important;
+    color: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+    box-shadow: none !important;
+    flex: none !important;
+}
+#sr-preview-close:hover {
+    background: #e0443e !important;
+    color: #4c0000 !important;
+}
+#sr-preview-info {
+    padding: 4px 16px 16px !important;
 }
 """
 
@@ -624,10 +667,16 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
             # Preview popup -- an always-present, normally-hidden overlay
             # (styled via #sr-preview-modal in CUSTOM_CSS) rather than a
             # native dialog component, since this Gradio version has none.
+            # The nested #sr-preview-window Column is the actual "window":
+            # one fused card with a title bar, so it doesn't render as three
+            # separately-boxed floating pieces.
             with gr.Group(visible=False, elem_id="sr-preview-modal") as sr_modal:
-                sr_modal_image = gr.Image(show_label=False, interactive=False)
-                sr_modal_info = gr.Markdown()
-                sr_modal_close_btn = gr.Button("Close")
+                with gr.Column(elem_id="sr-preview-window"):
+                    with gr.Row(elem_id="sr-preview-titlebar"):
+                        gr.Markdown("**Reference Image**")
+                        sr_modal_close_btn = gr.Button("✕", elem_id="sr-preview-close")
+                    sr_modal_image = gr.Image(show_label=False, interactive=False)
+                    sr_modal_info = gr.Markdown(elem_id="sr-preview-info")
 
             sr_row_refresh_outputs = []
             for _label, _row in zip(sr_row_labels, sr_row_containers):
