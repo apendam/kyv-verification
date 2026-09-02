@@ -39,17 +39,25 @@ hand:
 {
   "models": [
     {"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5", "vision": true, "embedding": false},
-    {"id": "nvidia/llama-nemotron-embed-vl-1b-v2", "label": "NVIDIA Nemotron Embed VL 1B", "vision": false, "embedding": true}
+    {"id": "google/gemini-embedding-2", "label": "Gemini Embedding 2 (image-capable)", "vision": false, "embedding": true}
   ]
 }
 ```
 
 Edit it directly to add/remove entries, or use the **Model Catalog** tab's
-"Verify against OpenRouter" box: it calls OpenRouter's public
-`GET /api/v1/models` catalog endpoint (no API key spent — it's an
-unauthenticated read), confirms the id is real, shows its pricing and input
-modalities, and — once you tick vision/embedding and click "Add to
-catalog" — appends it to `models.json` for you.
+"Verify against OpenRouter" box. OpenRouter splits its catalog across two
+endpoints — `GET /models` (chat/vision models, public/unauthenticated) and
+`GET /embeddings/models` (embedding models only, needs your API key) — the
+verify box checks both, so either kind of model resolves. It shows the
+matched model's real pricing and input/output modalities, and — once you
+tick vision/embedding and click "Add to catalog" — appends it to
+`models.json` for you.
+
+**Embedding models are almost all text-only.** This app sends image content
+to the embeddings endpoint for the duplicate check, and most embedding
+models will reject that — of what OpenRouter currently lists,
+`google/gemini-embedding-2` is the one confirmed to accept images. The
+verify box will warn you if a model you look up doesn't take image input.
 
 ## Setup
 
@@ -152,10 +160,12 @@ pass `--force` — see `db.already_checked`.
   invocation; wrap it in a shell loop or extend it if you need to run a
   folder overnight — worth adding real rate-limiting before you do, rather
   than firing requests as fast as the loop allows.
-- **The embedding model for duplicate detection** (`nvidia/llama-nemotron-embed-vl-1b-v2`
-  by default) was confirmed in OpenRouter's docs as image-capable, but not
-  confirmed live-available against the full model catalog — verify it
-  resolves before seeding a real corpus with it; swap via `--embed-model` if not.
+- **The embedding model for duplicate detection** defaults to
+  `google/gemini-embedding-2` — confirmed live against OpenRouter's own
+  `/embeddings/models` endpoint as one of the few embedding models that
+  accepts image input (most are text-only and will reject the images this
+  app sends). The original default here, `nvidia/llama-nemotron-embed-vl-1b-v2`,
+  currently 404s ("No endpoints found") — no provider serves it right now.
 - **Linear-scan similarity search.** Fine up to tens of thousands of
   reference images; past that, this is exactly the job the existing
   pgvector setup is built for.

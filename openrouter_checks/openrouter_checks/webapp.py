@@ -339,14 +339,21 @@ def do_verify_model(model_id: str):
             msg += " No close match found either — double check the id at openrouter.ai/models."
         return msg, False, False
 
-    modalities = info.get("architecture", {}).get("input_modalities", [])
-    is_vision = "image" in modalities
+    arch = info.get("architecture", {})
+    in_modalities = arch.get("input_modalities", [])
+    out_modalities = arch.get("output_modalities", [])
+    is_vision = "image" in in_modalities and "embeddings" not in out_modalities
+    is_embedding = "embeddings" in out_modalities
     pricing = info.get("pricing", {})
+    warn = ""
+    if is_embedding and "image" not in in_modalities:
+        warn = (" **Note:** this embedding model only takes text input — it will reject the "
+                 "images this app sends for the duplicate check and seeding.")
     msg = (f"Found **{info.get('name', model_id)}** (`{model_id}`) &middot; "
-           f"modalities: {modalities} &middot; prompt ${pricing.get('prompt', '?')}/tok, "
-           f"completion ${pricing.get('completion', '?')}/tok. Check the box(es) below and "
-           f"add it to the catalog if it's what you want.")
-    return msg, is_vision, not is_vision
+           f"input: {in_modalities}, output: {out_modalities} &middot; "
+           f"prompt ${pricing.get('prompt', '?')}/tok, completion ${pricing.get('completion', '?')}/tok."
+           f"{warn} Check the box(es) below and add it to the catalog if it's what you want.")
+    return msg, is_vision, is_embedding
 
 
 def do_add_to_catalog(model_id: str, label: str, is_vision: bool, is_embedding: bool):

@@ -4,6 +4,10 @@
     {"id": "anthropic/claude-opus-5", "label": "Claude Opus 5", "vision": true, "embedding": false},
     {"id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vision": true, "embedding": false},
     {"id": "openai/gpt-4o", "label": "GPT-4o", "vision": true, "embedding": false},
-    {"id": "nvidia/llama-nemotron-embed-vl-1b-v2", "label": "NVIDIA Nemotron Embed VL 1B", "vision": false, "embedding": true}
+    {"id": "google/gemini-embedding-2", "label": "Gemini Embedding 2 (image-capable)", "vision": false, "embedding": true},
+    {"id": "openai/text-embedding-3-small", "label": "OpenAI Text Embedding 3 Small (text only)", "vision": false, "embedding": true},
+    {"id": "openai/text-embedding-3-large", "label": "OpenAI Text Embedding 3 Large (text only)", "vision": false, "embedding": true},
+    {"id": "qwen/qwen3-embedding-8b", "label": "Qwen3 Embedding 8B (text only)", "vision": false, "embedding": true},
+    {"id": "baai/bge-m3", "label": "BAAI BGE-M3 (text only)", "vision": false, "embedding": true}
   ]
 }

@@ -19,7 +19,13 @@ OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.
 # code. Pick any vision-capable model from https://openrouter.ai/models —
 # these three are just sane, cheap-ish starting points.
 DEFAULT_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "anthropic/claude-sonnet-5")
-DEFAULT_EMBED_MODEL = os.environ.get("OPENROUTER_EMBED_MODEL", "nvidia/llama-nemotron-embed-vl-1b-v2")
+# nvidia/llama-nemotron-embed-vl-1b-v2 (the original default here) currently
+# 404s with "No endpoints found" -- no provider serves it right now. Of the
+# embedding models OpenRouter currently lists, google/gemini-embedding-2 is
+# the one confirmed to accept image input (most embedding models are
+# text-only and will reject the image content this app sends for the
+# duplicate check) — see models.json / the Model Catalog tab for others.
+DEFAULT_EMBED_MODEL = os.environ.get("OPENROUTER_EMBED_MODEL", "google/gemini-embedding-2")
 
 # --- storage ----------------------------------------------------------------
 DEFAULT_DB_PATH = Path(os.environ.get("KYV_DB_PATH", "kyv_checks.sqlite3"))
