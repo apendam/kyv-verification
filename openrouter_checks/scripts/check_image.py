@@ -36,9 +36,6 @@ def main() -> None:
     ap.add_argument("--upload-id", required=True, help="Unique id for this upload.")
     ap.add_argument("--model", default=config.DEFAULT_VISION_MODEL,
                      help=f"OpenRouter vision model (default: {config.DEFAULT_VISION_MODEL}).")
-    ap.add_argument("--embed-model", default=config.DEFAULT_EMBED_MODEL,
-                     help=f"OpenRouter embedding model for the duplicate check "
-                          f"(default: {config.DEFAULT_EMBED_MODEL}).")
     ap.add_argument("--db", default=str(config.DEFAULT_DB_PATH), help="SQLite file path.")
     ap.add_argument("--force", action="store_true",
                      help="Re-run even if this upload_id already has a recorded result "
@@ -64,7 +61,7 @@ def main() -> None:
     try:
         result = run_gate_sequence(
             conn, client, image_path=args.image, claimed_vrn=args.vrn, claimed_make=args.make,
-            upload_id=args.upload_id, vision_model=args.model, embed_model=args.embed_model,
+            upload_id=args.upload_id, vision_model=args.model,
         )
     except OpenRouterInsufficientCredits as exc:
         print(f"Stopped: {exc}", file=sys.stderr)

@@ -44,7 +44,6 @@ def _log(conn, upload_id, check_name, model, verdict, detail, *,
 def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
                        image_path: str | Path, claimed_vrn: str, claimed_make: str,
                        upload_id: str, vision_model: str = config.DEFAULT_VISION_MODEL,
-                       embed_model: str = config.DEFAULT_EMBED_MODEL,
                        ) -> GateResult:
     steps: list[dict] = []
 
@@ -155,26 +154,23 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
         # else "match" -> fall through
 
     # -- 4. Duplicate check (last gate, only on the would-approve path) -------
+    # Local perceptual-hash comparison -- no model call, no cost, so there's
+    # no OpenRouterError path here the way every other step has one.
     try:
-        dup_result, call_info = duplicate.check_duplicate(
-            conn, client, image_path=str(image_path), image_type="front",
-            claimed_vrn=claimed_vrn, exclude_upload_id=upload_id, embed_model=embed_model,
-            plate_bbox=plate_bbox,
+        dup_result = duplicate.check_duplicate(
+            conn, image_path=str(image_path), image_type="front",
+            claimed_vrn=claimed_vrn, exclude_upload_id=upload_id, plate_bbox=plate_bbox,
         )
-    except OpenRouterInsufficientCredits:
-        raise
-    except OpenRouterError as exc:
-        _log(conn, upload_id, "duplicate_check", embed_model, "technical_failure",
+    except Exception as exc:  # noqa: BLE001 - a bad/corrupt image file, most likely
+        _log(conn, upload_id, "duplicate_check", "local:phash", "technical_failure",
              {"error": str(exc)}, technical_failure=True)
         return finish("MANUAL_REVIEW", "duplicate check: technical failure")
 
-    _log(conn, upload_id, "duplicate_check", call_info.model,
+    _log(conn, upload_id, "duplicate_check", "local:phash",
          "duplicate" if dup_result.is_duplicate else "clean",
          {"best_match_upload_id": dup_result.best_match_upload_id,
-          "best_match_similarity": dup_result.best_match_similarity,
-          "reason": dup_result.reason},
-         prompt_tokens=call_info.prompt_tokens, cost_usd=call_info.cost_usd,
-         latency_ms=call_info.latency_ms)
+          "best_match_hamming_distance": dup_result.best_match_hamming_distance,
+          "reason": dup_result.reason})
     steps.append({"check": "duplicate_check", "outcome": dup_result.reason})
 
     if dup_result.is_duplicate:

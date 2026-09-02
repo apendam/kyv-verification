@@ -1,100 +1,92 @@
-"""Embedding-based near-duplicate detection, built fresh on OpenRouter's
-`/embeddings` endpoint (not the SigLIP+pgvector system already in
-vehicle_front_image_validator/ — a deliberate choice to avoid a Postgres
-deployment). Embeddings are stored as blobs in the same SQLite file and
-compared with plain cosine similarity in Python; fine up to tens of thousands
-of reference images (see db.fetch_reference_embeddings for the scaling note).
+"""Near-duplicate detection via a local perceptual hash (pHash), not an
+OpenRouter embedding. An embedding from a general-purpose multimodal model
+turned out not to cluster near 1.0 cosine similarity even for two images of
+the same truck differing only in an edited plate — pHash is a much better
+fit for "is this the same photo, maybe re-cropped/recompressed/lightly
+edited": it's deterministic, free (no API call), and Hamming distance
+between two 64-bit hashes gives a clean, well-understood similarity metric
+with none of the per-model threshold-calibration guesswork an embedding
+needed. Hashes are stored as hex strings in the same SQLite file; comparing
+against every stored reference hash is a linear scan, fine up to tens of
+thousands of reference images (see db.fetch_reference_phashes).
 """
 from __future__ import annotations
 
-import math
 import os
 import sqlite3
 from dataclasses import dataclass
 
+import imagehash
+from PIL import Image
+
 from . import config, db, imaging
-from .client import OpenRouterClient
 
 
-def cosine_similarity(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b):
-        raise ValueError(f"embedding dimension mismatch: {len(a)} vs {len(b)}")
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+def compute_phash(image_path: str, plate_bbox: tuple[float, float, float, float] | None = None
+                   ) -> imagehash.ImageHash:
+    """Hashes `image_path`, blacking out `plate_bbox` first if given (see
+    imaging.mask_normalized_box) so the comparison is based on the rest of
+    the vehicle rather than the plate — reusing the same photo under a
+    different claimed VRN by only swapping the plate can't dodge this check,
+    and the hash isn't influenced by whatever text happens to be on the
+    plate. Reference images are expected to be hashed the same way for the
+    comparison to be meaningful.
+    """
+    hash_path = image_path
+    if plate_bbox is not None:
+        hash_path = imaging.mask_normalized_box(image_path, plate_bbox)
+    try:
+        return imagehash.phash(Image.open(hash_path))
+    finally:
+        if hash_path != image_path:
+            os.unlink(hash_path)  # a masked temp copy, never the original
 
 
 @dataclass
 class DuplicateResult:
     is_duplicate: bool
     best_match_upload_id: str | None
-    best_match_similarity: float
+    best_match_hamming_distance: int | None
     best_match_claimed_vrn: str | None
     reason: str
 
 
-def check_duplicate(conn: sqlite3.Connection, client: OpenRouterClient, *,
-                     image_path: str, image_type: str, claimed_vrn: str,
+def check_duplicate(conn: sqlite3.Connection, *, image_path: str, image_type: str, claimed_vrn: str,
                      exclude_upload_id: str | None = None,
-                     embed_model: str = config.DEFAULT_EMBED_MODEL,
-                     similarity_min: float = config.DUPLICATE_SIMILARITY_MIN,
+                     hamming_max: int = config.DUPLICATE_HAMMING_MAX,
                      plate_bbox: tuple[float, float, float, float] | None = None,
-                     ) -> tuple[DuplicateResult, "EmbedCallInfo"]:
-    """Embeds `image_path`, compares it against every stored reference image of
-    the same `image_type`, and flags a duplicate only when the closest match is
-    at or above `similarity_min` AND was filed under a *different* claimed VRN —
-    an honest re-upload under the same VRN is never flagged (same rule the
-    existing pgvector-based checker uses).
-
-    `plate_bbox` (x_min, y_min, x_max, y_max, 0-1 fractions of image
-    width/height — the PLATE_READ_SCHEMA field shape), when given, is blacked
-    out before embedding: the comparison is then based on the rest of the
-    vehicle rather than the plate, so reusing the same photo under a
-    different claimed VRN by only swapping the plate can't dodge this check,
-    and the embedding isn't biased by whatever text happens to be on the
-    plate. Reference images stored via `db.insert_reference_image` are
-    expected to have been masked the same way before their embedding was
-    computed, for the comparison to be meaningful.
+                     ) -> DuplicateResult:
+    """Hashes `image_path` (see compute_phash), compares it against every
+    stored reference hash of the same `image_type`, and flags a duplicate
+    only when the closest match's Hamming distance is at or below
+    `hamming_max` AND was filed under a *different* claimed VRN — an honest
+    re-upload under the same VRN is never flagged (same rule the existing
+    pgvector-based checker uses). Lower Hamming distance = more similar;
+    0 means the two 64-bit hashes are identical.
     """
-    embed_path = image_path
-    if plate_bbox is not None:
-        embed_path = imaging.mask_normalized_box(image_path, plate_bbox)
-    try:
-        result = client.embed(model=embed_model, image_path=embed_path)
-    finally:
-        if embed_path != image_path:
-            os.unlink(embed_path)  # a masked temp copy, never the original
-    call_info = EmbedCallInfo(result.model, result.prompt_tokens, result.cost_usd, result.latency_ms)
+    query_hash = compute_phash(image_path, plate_bbox)
 
-    candidates = db.fetch_reference_embeddings(conn, image_type, exclude_upload_id)
+    candidates = db.fetch_reference_phashes(conn, image_type, exclude_upload_id)
     best_upload_id: str | None = None
-    best_sim = -1.0
+    best_distance: int | None = None
     best_vrn: str | None = None
-    for upload_id, vector, ref_vrn in candidates:
-        sim = cosine_similarity(result.vector, vector)
-        if sim > best_sim:
-            best_upload_id, best_sim, best_vrn = upload_id, sim, ref_vrn
+    for upload_id, phash_hex, ref_vrn in candidates:
+        # `imagehash`'s `-` operator returns numpy.int64, not a plain int --
+        # cast immediately so nothing downstream (json.dumps in db.log_check,
+        # in particular, which chokes on numpy scalar types) ever sees one.
+        distance = int(query_hash - imagehash.hex_to_hash(phash_hex))
+        if best_distance is None or distance < best_distance:
+            best_upload_id, best_distance, best_vrn = upload_id, distance, ref_vrn
 
     if best_upload_id is None:
-        return DuplicateResult(False, None, 0.0, None, "no reference images of this type yet"), call_info
+        return DuplicateResult(False, None, None, None, "no reference images of this type yet")
 
-    is_dup = best_sim >= similarity_min and best_vrn != claimed_vrn
-    if best_sim >= similarity_min and best_vrn == claimed_vrn:
+    is_dup = bool(best_distance <= hamming_max and best_vrn != claimed_vrn)
+    if best_distance <= hamming_max and best_vrn == claimed_vrn:
         reason = "near-duplicate but under the same claimed VRN — treated as an honest re-upload"
     elif is_dup:
-        reason = f"near-duplicate (sim={best_sim:.4f}) filed under a different VRN"
+        reason = f"near-duplicate (hamming={best_distance}) filed under a different VRN"
     else:
-        reason = f"closest match sim={best_sim:.4f}, below threshold {similarity_min}"
+        reason = f"closest match hamming={best_distance}, above threshold {hamming_max}"
 
-    return DuplicateResult(is_dup, best_upload_id, round(best_sim, 4), best_vrn, reason), call_info
-
-
-@dataclass
-class EmbedCallInfo:
-    model: str
-    prompt_tokens: int
-    cost_usd: float
-    latency_ms: int
+    return DuplicateResult(is_dup, best_upload_id, best_distance, best_vrn, reason)

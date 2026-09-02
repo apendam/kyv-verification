@@ -12,6 +12,9 @@ python-dotenv>=1.0
 # problem, which just forces the broken old combination back in.
 gradio>=4.0
 Pillow>=10.0
+# Local perceptual hashing (pHash) for the duplicate check -- deterministic,
+# free (no API call), no per-model threshold-calibration guesswork.
+ImageHash>=4.3
 
 # Pure-logic VRN/maker matching, reused from the sibling package instead of
 # re-deriving fuzzy-match rules here. Installed separately (see README) since

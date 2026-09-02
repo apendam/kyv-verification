@@ -2,11 +2,18 @@
 
 OpenRouter-backed implementation of the **KYV Gate Sequence** flowchart
 (front image → vehicle type → VRN → maker → duplicate → approve), plus a
-standalone, OpenRouter-embeddings-based reference-image repository for the
-duplicate check — built fresh rather than reusing the SigLIP+pgvector system
-already in `vehicle_front_image_validator/`, so there's no database server to
-stand up. Model choice is a flag everywhere, not a constant, so you can swap
-between providers per run.
+standalone reference-image repository for the duplicate check — built fresh
+rather than reusing the SigLIP+pgvector system already in
+`vehicle_front_image_validator/`, so there's no database server to stand up.
+Model choice is a flag everywhere, not a constant, so you can swap between
+providers per run.
+
+The duplicate check itself is a **local perceptual hash (pHash)**, not an
+OpenRouter embedding — an embedding from a general-purpose multimodal model
+didn't cluster near a clean threshold even for two photos of the same truck
+differing only in an edited plate, and pHash is a better-suited, free,
+deterministic tool for "is this the same photo, maybe re-cropped/edited."
+See `duplicate.py` / `imaging.py`.
 
 Two scripts, plus a Gradio front end:
 
@@ -31,33 +38,26 @@ Both scripts and the webapp write to the same SQLite file
 
 ## Model catalog (`models.json`)
 
-The webapp's "Vision model" / "Embedding model" dropdowns are populated from
-`models.json` (repo root of this package) — a plain list you maintain by
-hand:
+The webapp's "Vision model" dropdowns (Check Image, Seed Reference — both
+use one to read/locate the plate) are populated from `models.json` (repo
+root of this package) — a plain list you maintain by hand:
 
 ```json
 {
   "models": [
-    {"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5", "vision": true, "embedding": false},
-    {"id": "google/gemini-embedding-2", "label": "Gemini Embedding 2 (image-capable)", "vision": false, "embedding": true}
+    {"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5", "vision": true, "embedding": false}
   ]
 }
 ```
 
 Edit it directly to add/remove entries, or use the **Model Catalog** tab's
-"Verify against OpenRouter" box. OpenRouter splits its catalog across two
-endpoints — `GET /models` (chat/vision models, public/unauthenticated) and
-`GET /embeddings/models` (embedding models only, needs your API key) — the
-verify box checks both, so either kind of model resolves. It shows the
-matched model's real pricing and input/output modalities, and — once you
-tick vision/embedding and click "Add to catalog" — appends it to
-`models.json` for you.
-
-**Embedding models are almost all text-only.** This app sends image content
-to the embeddings endpoint for the duplicate check, and most embedding
-models will reject that — of what OpenRouter currently lists,
-`google/gemini-embedding-2` is the one confirmed to accept images. The
-verify box will warn you if a model you look up doesn't take image input.
+"Verify against OpenRouter" box, which checks a typed-in id against
+OpenRouter's live catalog and shows its real pricing and input/output
+modalities before you tick vision/embedding and click "Add to catalog". The
+`embedding` flag/column is there for your own reference (OpenRouter also
+serves a separate `GET /embeddings/models` catalog for it) — nothing in this
+app currently consumes an embedding model, since the duplicate check is a
+local perceptual hash instead (see above).
 
 ## Setup
 
@@ -100,8 +100,9 @@ python scripts/show_costs.py --by check_name
 ```
 
 Pick any vision-capable model from <https://openrouter.ai/models> for
-`--model`; any embedding model for `--embed-model`. Defaults live in
-`openrouter_checks/config.py`.
+`--model` (or `seed_reference.py`'s `--vision-model`, used there to locate
+the plate for masking, same as the Check Image path's own VRN check).
+Defaults live in `openrouter_checks/config.py`.
 
 ## What each script actually does
 
@@ -119,11 +120,15 @@ flowchart node by node:
    match both proceed toward approval; a mismatch → manual review (it can
    never reject on its own).
 4. **Duplicate check** — only runs on the path that would otherwise approve.
-   Embeds the image, compares by cosine similarity against every reference
-   image of the same type, and flags a duplicate only when the closest match
-   is ≥ `DUPLICATE_SIMILARITY_MIN` (default `0.97`) **and** was filed under a
-   *different* claimed VRN — an honest re-upload under the same VRN is never
-   flagged.
+   Blacks out the plate (using the bounding box the VRN check already read —
+   no extra model call), hashes what's left with a local perceptual hash,
+   and compares its Hamming distance against every reference image of the
+   same type. Flags a duplicate only when the closest match's distance is ≤
+   `DUPLICATE_HAMMING_MAX` (default `10`, out of 64 bits — lower means more
+   similar) **and** was filed under a *different* claimed VRN — an honest
+   re-upload under the same VRN is never flagged. Masking the plate first
+   means reusing the same photo under a different claimed VRN by only
+   editing the plate can't dodge this check.
 
 Every step is logged to the `checks` table regardless of outcome, including a
 `technical_failure` flag (API error, malformed response, exhausted retries) —
@@ -160,12 +165,10 @@ pass `--force` — see `db.already_checked`.
   invocation; wrap it in a shell loop or extend it if you need to run a
   folder overnight — worth adding real rate-limiting before you do, rather
   than firing requests as fast as the loop allows.
-- **The embedding model for duplicate detection** defaults to
-  `google/gemini-embedding-2` — confirmed live against OpenRouter's own
-  `/embeddings/models` endpoint as one of the few embedding models that
-  accepts image input (most are text-only and will reject the images this
-  app sends). The original default here, `nvidia/llama-nemotron-embed-vl-1b-v2`,
-  currently 404s ("No endpoints found") — no provider serves it right now.
-- **Linear-scan similarity search.** Fine up to tens of thousands of
-  reference images; past that, this is exactly the job the existing
-  pgvector setup is built for.
+- **`DUPLICATE_HAMMING_MAX` (default `10`) is a starting point, not a
+  calibrated value.** Test it against your own labeled pairs (known
+  duplicates vs. known-different vehicles) and adjust in
+  `openrouter_checks/config.py`.
+- **Linear-scan Hamming-distance search.** Fine up to tens of thousands of
+  reference images; past that, an indexed nearest-neighbor structure would
+  be the next step.

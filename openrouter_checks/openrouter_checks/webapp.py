@@ -15,7 +15,6 @@ Run with:
 """
 from __future__ import annotations
 
-import os
 import shutil
 import time
 from pathlib import Path
@@ -27,7 +26,7 @@ load_dotenv()  # must run before `from . import config` reads OPENROUTER_API_KEY
 import gradio as gr
 from PIL import Image
 
-from . import config, db, imaging, models, prompts, schemas
+from . import config, db, duplicate, models, prompts, schemas
 from .client import OpenRouterClient, OpenRouterInsufficientCredits
 from .gate_sequence import run_gate_sequence
 
@@ -413,7 +412,7 @@ def on_check_image_upload(file_path):
     return image, label
 
 
-def run_check_image(image_file, vrn, make, upload_id, vision_model, embed_model):
+def run_check_image(image_file, vrn, make, upload_id, vision_model):
     if not image_file:
         return "### Upload an image first.", "", ""
     if not vrn or not make:
@@ -429,8 +428,7 @@ def run_check_image(image_file, vrn, make, upload_id, vision_model, embed_model)
     try:
         result = run_gate_sequence(
             conn, client, image_path=image_file, claimed_vrn=vrn.strip(),
-            claimed_make=make.strip(), upload_id=upload_id,
-            vision_model=vision_model, embed_model=embed_model,
+            claimed_make=make.strip(), upload_id=upload_id, vision_model=vision_model,
         )
     except OpenRouterInsufficientCredits as exc:
         return f"### Stopped — out of OpenRouter credits\n\n{exc}", "", ""
@@ -523,7 +521,7 @@ def open_preview(rows: list[dict], idx: int):
     info = (f"**Upload ID:** `{r['upload_id']}`  \n"
             f"**Type:** {r['image_type']}  \n"
             f"**Claimed VRN:** {r['claimed_vrn'] or '—'}  \n"
-            f"**Embedding model:** `{r['embed_model']}`  \n"
+            f"**Perceptual hash:** `{r['phash']}`  \n"
             f"**Added:** {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['created_at']))}")
     return gr.update(visible=True), r["image_path"], info
 
@@ -575,7 +573,7 @@ def _locate_plate_bbox(client: OpenRouterClient, conn, image_path: str, vision_m
             r.data.get("bbox_x_max", 0.0), r.data.get("bbox_y_max", 0.0))
 
 
-def run_seed(image_file, image_type, upload_id, vrn, vision_model, embed_model):
+def run_seed(image_file, image_type, upload_id, vrn, vision_model):
     stats = refresh_repo_stats()
     row_updates = refresh_row_list(image_type)
     if not image_file:
@@ -591,30 +589,23 @@ def run_seed(image_file, image_type, upload_id, vrn, vision_model, embed_model):
         upload_id = f"ref-{vrn}-{image_type}" if vrn else f"ref-{image_type}-{time.time_ns()}"
 
     conn = db.connect(config.DEFAULT_DB_PATH)
-    embed_path = image_file
     try:
         client = OpenRouterClient()
         plate_bbox = _locate_plate_bbox(client, conn, image_file, vision_model, upload_id, image_type)
-        if plate_bbox is not None:
-            embed_path = imaging.mask_normalized_box(image_file, plate_bbox)
-        result = client.embed(model=embed_model, image_path=embed_path)
+        phash = str(duplicate.compute_phash(image_file, plate_bbox))
     except OpenRouterInsufficientCredits as exc:
         return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, *row_updates
     except Exception as exc:  # noqa: BLE001
         return f"### Error\n\n{exc}", stats, *row_updates
-    finally:
-        if embed_path != image_file:
-            os.unlink(embed_path)  # a masked temp copy, never the original upload
 
     # The ORIGINAL (unmasked) upload is what gets stored/previewed -- only
-    # the embedding computation ever sees the plate-masked version.
+    # the hash computation ever sees the plate-masked version.
     stored_path = _persist_reference_image(image_file, upload_id, image_type)
     db.insert_reference_image(
         conn, upload_id=upload_id, image_type=image_type, image_path=stored_path,
-        claimed_vrn=vrn, embedding=result.vector, embed_model=result.model,
+        claimed_vrn=vrn, phash=phash,
     )
-    msg = (f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; "
-           f"${result.cost_usd:.5f} &middot; {result.prompt_tokens} tokens")
+    msg = f"### Added\n\n`{upload_id}` &middot; **{image_type}** &middot; phash `{phash}`"
     return msg, refresh_repo_stats(), *refresh_row_list(image_type)
 
 
@@ -695,11 +686,8 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     ci_make_in = gr.Textbox(label="Claimed make")
                     ci_upload_id_in = gr.Textbox(
                         label="Upload ID (optional — auto-generated from the VRN if left blank)")
-                    with gr.Row():
-                        ci_vision_dd = gr.Dropdown(models.vision_models(), value=config.DEFAULT_VISION_MODEL,
-                                                   allow_custom_value=True, label="Vision model")
-                        ci_embed_dd = gr.Dropdown(models.embed_models(), value=config.DEFAULT_EMBED_MODEL,
-                                                  allow_custom_value=True, label="Embedding model")
+                    ci_vision_dd = gr.Dropdown(models.vision_models(), value=config.DEFAULT_VISION_MODEL,
+                                               allow_custom_value=True, label="Vision model")
                     ci_run_btn = gr.Button("Run gate sequence", variant="primary")
                 with gr.Column(scale=1):
                     ci_banner_out = gr.Markdown()
@@ -714,7 +702,7 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
             ci_run_btn.click(None, None, None, js=_SCROLL_TOP_JS)
             ci_run_btn.click(
                 run_check_image,
-                inputs=[ci_file_in, ci_vrn_in, ci_make_in, ci_upload_id_in, ci_vision_dd, ci_embed_dd],
+                inputs=[ci_file_in, ci_vrn_in, ci_make_in, ci_upload_id_in, ci_vision_dd],
                 outputs=[ci_banner_out, ci_steps_out, ci_summary_out],
             )
 
@@ -730,13 +718,10 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     sr_upload_id_in = gr.Textbox(
                         label="Upload ID (optional — auto-generated from VRN + image type if left blank)")
                     sr_vrn_in = gr.Textbox(label="Claimed VRN")
-                    with gr.Row():
-                        sr_vision_dd = gr.Dropdown(
-                            models.vision_models(), value=config.DEFAULT_VISION_MODEL,
-                            allow_custom_value=True,
-                            label="Vision model (locates the plate to mask before embedding)")
-                        sr_embed_dd = gr.Dropdown(models.embed_models(), value=config.DEFAULT_EMBED_MODEL,
-                                                  allow_custom_value=True, label="Embedding model")
+                    sr_vision_dd = gr.Dropdown(
+                        models.vision_models(), value=config.DEFAULT_VISION_MODEL,
+                        allow_custom_value=True,
+                        label="Vision model (locates the plate to mask before hashing)")
                     sr_run_btn = gr.Button("Add to repository", variant="primary")
                 with gr.Column(scale=1):
                     sr_result_out = gr.Markdown()
@@ -802,7 +787,7 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
             sr_run_btn.click(None, None, None, js=_SCROLL_TOP_JS)
             sr_run_btn.click(
                 run_seed,
-                inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_vision_dd, sr_embed_dd],
+                inputs=[sr_file_in, sr_type_in, sr_upload_id_in, sr_vrn_in, sr_vision_dd],
                 outputs=[sr_result_out, sr_stats_out, *sr_row_refresh_outputs],
             )
 

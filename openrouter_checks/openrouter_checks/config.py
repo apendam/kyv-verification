@@ -15,17 +15,9 @@ OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.
 
 # --- models ---------------------------------------------------------------
 # "<provider>/<model-slug>" per OpenRouter's model-id format. Override with
-# --model / --embed-model on either script, or these env vars, without touching
-# code. Pick any vision-capable model from https://openrouter.ai/models —
-# these three are just sane, cheap-ish starting points.
+# --model on either script, or this env var, without touching code. Pick any
+# vision-capable model from https://openrouter.ai/models.
 DEFAULT_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "anthropic/claude-sonnet-5")
-# nvidia/llama-nemotron-embed-vl-1b-v2 (the original default here) currently
-# 404s with "No endpoints found" -- no provider serves it right now. Of the
-# embedding models OpenRouter currently lists, google/gemini-embedding-2 is
-# the one confirmed to accept image input (most embedding models are
-# text-only and will reject the image content this app sends for the
-# duplicate check) — see models.json / the Model Catalog tab for others.
-DEFAULT_EMBED_MODEL = os.environ.get("OPENROUTER_EMBED_MODEL", "google/gemini-embedding-2")
 
 # --- storage ----------------------------------------------------------------
 DEFAULT_DB_PATH = Path(os.environ.get("KYV_DB_PATH", "kyv_checks.sqlite3"))
@@ -38,11 +30,16 @@ VRN_MAX_CONFUSABLE_EDITS = 1
 # than an outright reject. Above this, it's read as a genuinely different VRN.
 VRN_SIMILAR_CHAR_MAX_DISTANCE = 3
 
-# Duplicate-photo threshold: only flag a hit when cosine similarity is at or
-# above this AND the claimed VRN differs from the matched upload's (an honest
-# re-upload under the *same* VRN is never flagged) — same rule the existing
-# pgvector-based duplicate_check.py in vehicle_front_image_validator/ uses.
-DUPLICATE_SIMILARITY_MIN = 0.97
+# Duplicate-photo threshold: only flag a hit when the perceptual-hash (pHash)
+# Hamming distance is at or below this AND the claimed VRN differs from the
+# matched upload's (an honest re-upload under the *same* VRN is never
+# flagged) — same rule the existing pgvector-based duplicate_check.py in
+# vehicle_front_image_validator/ uses, applied to a different similarity
+# metric. Lower = more similar; 0 means the two 64-bit hashes are identical.
+# 10 is a commonly-cited "near duplicate" cutoff for this hash size, but
+# treat it as a starting point, not a calibrated value — tune against your
+# own labeled pairs.
+DUPLICATE_HAMMING_MAX = 10
 
 # --- HTTP behaviour ----------------------------------------------------------
 REQUEST_TIMEOUT_S = 60
