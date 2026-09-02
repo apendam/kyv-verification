@@ -44,6 +44,15 @@ Two scripts, plus a Gradio front end:
 Both scripts and the webapp write to the same SQLite file
 (`kyv_checks.sqlite3` by default) — one file, no hardware deployment.
 
+**The seeded duplicate-check corpus is committed to git on purpose** —
+`openrouter_checks/kyv_checks.sqlite3` and `openrouter_checks/
+reference_images/` are both tracked (see the `.gitignore` exception), so a
+fresh clone starts with the same reference images everyone else has already
+seeded, instead of an empty corpus. Tradeoff accepted: binary images + a
+SQLite file in git bloat the repo over time, and the DB file will conflict
+on every seed if more than one clone seeds it around the same time — commit
+and pull promptly after seeding rather than batching up changes.
+
 ## Model catalog (`models.json`)
 
 The webapp's "Vision model" dropdowns (Check Image, Seed Reference — both

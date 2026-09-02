@@ -8,4 +8,9 @@ venv/
 *.DS_Store
 .gradio/
 *.sqlite3
-openrouter_checks/reference_images/
+# Exception: the openrouter_checks duplicate-check corpus (seeded reference
+# images + the DB that indexes them) is committed on purpose, so a fresh
+# clone starts with the same corpus rather than an empty one. Tradeoff
+# accepted: binary images + a SQLite file in git bloat over time, and the DB
+# file will conflict on every seed if more than one clone seeds it.
+!openrouter_checks/kyv_checks.sqlite3
