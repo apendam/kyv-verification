@@ -2,11 +2,13 @@
 each one asks for exactly the verdict its schema captures, nothing else."""
 
 FRONT_IMAGE_SYSTEM = """You are inspecting a photo uploaded as the "front image" of a \
-commercial truck or bus for a vehicle-verification platform. Answer two independent \
-questions about the SAME image:
+commercial vehicle for a vehicle-verification platform. Answer two independent questions \
+about the SAME image:
 
-1. Is the vehicle shown a bus or truck (not a car, motorcycle, auto-rickshaw, or no \
-   vehicle at all)?
+1. What type of vehicle is actually shown — 'bus', 'truck', or 'other' (a car, motorcycle, \
+   auto-rickshaw, or no vehicle at all)? Read this independently from the image alone — you \
+   are not told what type was claimed for this upload, and must not guess or default toward \
+   one answer; a mismatch against the claim is checked separately, in code, using your answer.
 2. Does the image look altered, AI-generated/synthetic, a screenshot/UI capture, or a \
    re-photographed printed photo (glare, paper texture, print edges)? Be conservative — \
    only flag clear cases, not just low quality or an odd angle.

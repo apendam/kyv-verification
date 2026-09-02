@@ -2,12 +2,12 @@
 """Run one upload through the KYV front-image gate sequence via OpenRouter.
 
 Usage:
-    python scripts/check_image.py --image path/to/front.jpg \\
+    python scripts/check_image.py --image path/to/front.jpg --vehicle-type truck \\
         --vrn MH12AB1234 --make "TATA MOTORS LTD" --upload-id upload_001
 
     # try a different model for this run only, nothing else changes:
-    python scripts/check_image.py --image front.jpg --vrn MH12AB1234 \\
-        --make "TATA MOTORS LTD" --upload-id upload_002 \\
+    python scripts/check_image.py --image front.jpg --vehicle-type bus \\
+        --vrn MH12AB1234 --make "TATA MOTORS LTD" --upload-id upload_002 \\
         --model google/gemini-2.5-flash
 """
 from __future__ import annotations
@@ -33,6 +33,8 @@ def main() -> None:
     ap.add_argument("--image", required=True, help="Path to the front-image upload.")
     ap.add_argument("--vrn", required=True, help="Claimed vehicle registration number.")
     ap.add_argument("--make", required=True, help="Claimed manufacturer/make.")
+    ap.add_argument("--vehicle-type", required=True, choices=["bus", "truck"],
+                     help="Claimed vehicle type -- rejected outright if the image doesn't match.")
     ap.add_argument("--upload-id", required=True, help="Unique id for this upload.")
     ap.add_argument("--model", default=config.DEFAULT_VISION_MODEL,
                      help=f"OpenRouter vision model (default: {config.DEFAULT_VISION_MODEL}).")
@@ -61,7 +63,7 @@ def main() -> None:
     try:
         result = run_gate_sequence(
             conn, client, image_path=args.image, claimed_vrn=args.vrn, claimed_make=args.make,
-            upload_id=args.upload_id, vision_model=args.model,
+            claimed_vehicle_type=args.vehicle_type, upload_id=args.upload_id, vision_model=args.model,
         )
     except OpenRouterInsufficientCredits as exc:
         print(f"Stopped: {exc}", file=sys.stderr)

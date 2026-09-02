@@ -103,11 +103,11 @@ python scripts/seed_reference.py --image samples/truck1_fastag.jpg \
     --image-type fastag --upload-id ref_001 --vrn MH12AB1234
 
 # Check a new upload against the full gate sequence:
-python scripts/check_image.py --image samples/new_upload.jpg \
+python scripts/check_image.py --image samples/new_upload.jpg --vehicle-type truck \
     --vrn MH12AB1234 --make "TATA MOTORS LTD" --upload-id upload_042
 
 # Same image, different model, nothing else changes:
-python scripts/check_image.py --image samples/new_upload.jpg \
+python scripts/check_image.py --image samples/new_upload.jpg --vehicle-type truck \
     --vrn MH12AB1234 --make "TATA MOTORS LTD" --upload-id upload_043 \
     --model google/gemini-2.5-flash
 
@@ -126,9 +126,15 @@ Defaults live in `openrouter_checks/config.py`.
 `check_image.py` calls `gate_sequence.run_gate_sequence()`, which walks the
 flowchart node by node:
 
-1. **Front image check** — one vision call asks both "is this a bus/truck?"
-   and "is this altered/AI-generated?" at once (mirroring the flowchart's
-   "one CV+Claude pass" framing) → manual review on either bad answer.
+1. **Front image check** — one vision call asks both "what type of vehicle
+   is this, read independently of any claim (bus / truck / other)?" and "is
+   this altered/AI-generated?" (mirroring the flowchart's "one CV+Claude
+   pass" framing). The detected type is compared against the claimed
+   `--vehicle-type` in code — the model never sees the claim, so it can't
+   just agree with it. **Reject outright** (not manual review) if the image
+   isn't a bus or truck at all, or is one but doesn't match what was
+   claimed. Only a genuine match moves forward; the altered/AI-generated
+   flag still only sends to manual review.
 2. **VRN check** — reads the plate, then matches it against the claimed VRN
    using `truck_extract_match`'s confusion-aware edit distance (0/O, 1/I,
    5/S, …). Unreadable → manual review. A small residual distance (probably

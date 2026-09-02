@@ -7,9 +7,15 @@ from __future__ import annotations
 FRONT_IMAGE_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "vehicle_type_is_bus_or_truck": {
-            "type": "boolean",
-            "description": "True only if the main subject is clearly a bus or truck.",
+        "detected_vehicle_type": {
+            "type": "string",
+            "enum": ["bus", "truck", "other"],
+            "description": (
+                "The main subject's actual vehicle type, read independently from the image -- "
+                "'other' for a car, motorcycle, auto-rickshaw, or no vehicle at all. Never "
+                "influenced by what type was claimed for this upload; this is compared against "
+                "the claim in code, not decided here."
+            ),
         },
         "is_altered_or_ai_generated": {
             "type": "boolean",
@@ -24,7 +30,7 @@ FRONT_IMAGE_SCHEMA: dict = {
         },
         "reasoning": {"type": "string", "description": "One or two sentences, for a human reviewer."},
     },
-    "required": ["vehicle_type_is_bus_or_truck", "is_altered_or_ai_generated", "confidence", "reasoning"],
+    "required": ["detected_vehicle_type", "is_altered_or_ai_generated", "confidence", "reasoning"],
     "additionalProperties": False,
 }
 

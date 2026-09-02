@@ -412,7 +412,7 @@ def on_check_image_upload(file_path):
     return image, label
 
 
-def run_check_image(image_file, vrn, make, upload_id, vision_model):
+def run_check_image(image_file, vrn, make, vehicle_type, upload_id, vision_model):
     if not image_file:
         return "### Upload an image first.", "", ""
     if not vrn or not make:
@@ -428,7 +428,8 @@ def run_check_image(image_file, vrn, make, upload_id, vision_model):
     try:
         result = run_gate_sequence(
             conn, client, image_path=image_file, claimed_vrn=vrn.strip(),
-            claimed_make=make.strip(), upload_id=upload_id, vision_model=vision_model,
+            claimed_make=make.strip(), claimed_vehicle_type=vehicle_type,
+            upload_id=upload_id, vision_model=vision_model,
         )
     except OpenRouterInsufficientCredits as exc:
         return f"### Stopped — out of OpenRouter credits\n\n{exc}", "", ""
@@ -699,6 +700,8 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
                     ci_filename = gr.Markdown()
                     ci_vrn_in = gr.Textbox(label="Claimed VRN")
                     ci_make_in = gr.Textbox(label="Claimed make")
+                    ci_vehicle_type_in = gr.Radio(["truck", "bus"], value="truck",
+                                                  label="Claimed vehicle type")
                     ci_upload_id_in = gr.Textbox(
                         label="Upload ID (optional — auto-generated from the VRN if left blank)")
                     ci_vision_dd = gr.Dropdown(models.vision_models(), value=config.DEFAULT_VISION_MODEL,
@@ -717,7 +720,7 @@ with gr.Blocks(title="KYV · OpenRouter Checks", theme=gr.themes.Base(), css=CUS
             ci_run_btn.click(None, None, None, js=_SCROLL_TOP_JS)
             ci_run_btn.click(
                 run_check_image,
-                inputs=[ci_file_in, ci_vrn_in, ci_make_in, ci_upload_id_in, ci_vision_dd],
+                inputs=[ci_file_in, ci_vrn_in, ci_make_in, ci_vehicle_type_in, ci_upload_id_in, ci_vision_dd],
                 outputs=[ci_banner_out, ci_steps_out, ci_summary_out],
             )
 

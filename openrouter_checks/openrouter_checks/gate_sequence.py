@@ -1,7 +1,8 @@
 """Orchestrates one upload through the exact decision tree in the "KYV Gate
 Sequence" flowchart:
 
-  front image (vehicle type + tamper, one call)
+  front image (vehicle type + tamper, one call) -- reject outright if the
+    detected type isn't a bus/truck at all, or doesn't match what was claimed
     -> VRN check (unreadable / match / mismatch-similar / mismatch-other)
     -> maker check, only after a VRN match (unreadable or match proceed;
        mismatch -> manual review; never a reject on its own)
@@ -43,9 +44,11 @@ def _log(conn, upload_id, check_name, model, verdict, detail, *,
 
 def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
                        image_path: str | Path, claimed_vrn: str, claimed_make: str,
-                       upload_id: str, vision_model: str = config.DEFAULT_VISION_MODEL,
+                       claimed_vehicle_type: str, upload_id: str,
+                       vision_model: str = config.DEFAULT_VISION_MODEL,
                        ) -> GateResult:
     steps: list[dict] = []
+    claimed_vehicle_type = claimed_vehicle_type.strip().lower()
 
     def finish(decision: str, reason: str) -> GateResult:
         db.record_result(conn, upload_id=upload_id, decision=decision, reason=reason,
@@ -66,13 +69,18 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
              {"error": str(exc)}, technical_failure=True)
         return finish("MANUAL_REVIEW", "front image check: technical failure")
 
-    _log(conn, upload_id, "front_image_check", r.model, "ok", r.data,
+    _log(conn, upload_id, "front_image_check", r.model, "ok",
+         {**r.data, "claimed_vehicle_type": claimed_vehicle_type},
          prompt_tokens=r.prompt_tokens, completion_tokens=r.completion_tokens,
          cost_usd=r.cost_usd, latency_ms=r.latency_ms)
-    steps.append({"check": "front_image_check", **r.data})
+    steps.append({"check": "front_image_check", **r.data, "claimed_vehicle_type": claimed_vehicle_type})
 
-    if not r.data.get("vehicle_type_is_bus_or_truck", False):
-        return finish("MANUAL_REVIEW", "vehicle type mismatch")
+    detected_vehicle_type = r.data.get("detected_vehicle_type", "other")
+    if detected_vehicle_type == "other":
+        return finish("REJECT", "not a bus or truck")
+    if detected_vehicle_type != claimed_vehicle_type:
+        return finish("REJECT", f"vehicle type mismatch (claimed {claimed_vehicle_type}, "
+                                 f"detected {detected_vehicle_type})")
     if r.data.get("is_altered_or_ai_generated", False):
         return finish("MANUAL_REVIEW", "front image flagged")
 
