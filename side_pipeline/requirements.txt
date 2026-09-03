@@ -1,0 +1,20 @@
+requests>=2.31
+python-dotenv>=1.0
+Pillow>=10.0
+# Local perceptual hashing (pHash) for the duplicate check -- deterministic,
+# free (no API call), no per-model threshold-calibration guesswork.
+ImageHash>=4.3
+# Local SigLIP vector embedding -- the duplicate check's fallback signal,
+# only run when pHash comes back clean. Heavier than pHash (a few hundred MB
+# model, downloaded on first use) but catches near-duplicates pHash misses
+# (re-crop, lighting/angle change).
+transformers>=4.40
+torch>=2.2
+
+# Excel output for scripts/batch_check.py
+openpyxl>=3.1
+
+# Pure-logic VRN matching, reused from the sibling package instead of
+# re-deriving fuzzy-match rules here. Installed separately (see README) since
+# it's a local path dependency, not a PyPI package:
+#   pip install -e ../truck_extract_match

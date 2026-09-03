@@ -1,0 +1,3 @@
+image_path,claimed_vehicle_type,claimed_axle_count,claimed_vrn,front_image_upload_id,view_type,upload_id,vision_model
+samples/side_001.jpg,truck,3,MH12AB1234,upload_001,pure_side,side_001,
+samples/side_002.jpg,truck,2,MH14CD5678,upload_002,corner,side_002,anthropic/claude-sonnet-5
