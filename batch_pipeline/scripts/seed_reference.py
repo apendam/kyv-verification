@@ -53,6 +53,25 @@ def _locate_plate_bbox(client: OpenRouterClient, image_path: str, vision_model: 
             r.data.get("bbox_x_max", 0.0), r.data.get("bbox_y_max", 0.0))
 
 
+def _locate_vehicle_bbox(client: OpenRouterClient, image_path: str, vision_model: str):
+    """One vision call to find the main vehicle so the reference image can be
+    cropped to just the vehicle before hashing (see duplicate.compute_phash)
+    -- mirrors what a real check run gets for free from its own front image
+    check. A technical failure here just skips cropping rather than failing
+    the seed outright.
+    """
+    try:
+        r = client.chat_json(
+            model=vision_model, system_prompt=prompts.FRONT_IMAGE_SYSTEM,
+            user_text=prompts.front_image_user_text(), image_paths=[image_path],
+            json_schema=schemas.FRONT_IMAGE_SCHEMA, schema_name="vehicle_locate",
+        )
+    except Exception:  # noqa: BLE001 - cropping is a nice-to-have, not required to seed
+        return None
+    return (r.data.get("vehicle_bbox_x_min", 0.0), r.data.get("vehicle_bbox_y_min", 0.0),
+            r.data.get("vehicle_bbox_x_max", 0.0), r.data.get("vehicle_bbox_y_max", 0.0))
+
+
 def seed_one(conn, client: OpenRouterClient, *, image_path: str, image_type: str,
              upload_id: str, vrn: str | None, vision_model: str) -> None:
     if image_type not in VALID_TYPES:
@@ -60,11 +79,13 @@ def seed_one(conn, client: OpenRouterClient, *, image_path: str, image_type: str
     if not Path(image_path).is_file():
         raise FileNotFoundError(image_path)
     plate_bbox = _locate_plate_bbox(client, image_path, vision_model)
-    phash = str(duplicate.compute_phash(image_path, plate_bbox))
+    vehicle_bbox = _locate_vehicle_bbox(client, image_path, vision_model)
+    phash = str(duplicate.compute_phash(image_path, plate_bbox, vehicle_bbox))
 
     siglip_embedding = None
     try:
-        siglip_embedding = db.pack_embedding(duplicate.compute_siglip_embedding(image_path, plate_bbox))
+        siglip_embedding = db.pack_embedding(
+            duplicate.compute_siglip_embedding(image_path, plate_bbox, vehicle_bbox))
     except Exception:  # noqa: BLE001 - torch/transformers missing, or model download failed
         print(f"warning: no vector embedding for {upload_id} (pHash alone still works)", file=sys.stderr)
 

@@ -13,6 +13,11 @@ about the SAME image:
    re-photographed printed photo (glare, paper texture, print edges)? Be conservative — \
    only flag clear cases, not just low quality or an odd angle.
 
+Also locate the bounding box tightly enclosing the main vehicle itself -- not the road, sky, \
+other vehicles, or any background/environment around it -- as fractions of image width/height. \
+Used to crop the image down to just the vehicle before duplicate-image comparison, independent \
+of your answers above. If no vehicle is visible at all, use 0 for all four bounds.
+
 Respond only with the requested JSON."""
 
 PLATE_READ_SYSTEM = """You are reading the vehicle registration plate (VRN) in this \

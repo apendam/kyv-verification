@@ -29,8 +29,29 @@ FRONT_IMAGE_SCHEMA: dict = {
             "description": "0-1 confidence in BOTH verdicts above, taken together.",
         },
         "reasoning": {"type": "string", "description": "One or two sentences, for a human reviewer."},
+        "vehicle_bbox_x_min": {
+            "type": "number",
+            "description": (
+                "Left edge of the bounding box tightly enclosing the main vehicle (not the "
+                "background/environment around it), as a 0-1 fraction of image width. 0 if no "
+                "vehicle is visible at all."
+            ),
+        },
+        "vehicle_bbox_y_min": {
+            "type": "number",
+            "description": "Top edge of the vehicle's bounding box, as a 0-1 fraction of image height. 0 if no vehicle is visible.",
+        },
+        "vehicle_bbox_x_max": {
+            "type": "number",
+            "description": "Right edge of the vehicle's bounding box, as a 0-1 fraction of image width. 0 if no vehicle is visible.",
+        },
+        "vehicle_bbox_y_max": {
+            "type": "number",
+            "description": "Bottom edge of the vehicle's bounding box, as a 0-1 fraction of image height. 0 if no vehicle is visible.",
+        },
     },
-    "required": ["detected_vehicle_type", "is_altered_or_ai_generated", "confidence", "reasoning"],
+    "required": ["detected_vehicle_type", "is_altered_or_ai_generated", "confidence", "reasoning",
+                 "vehicle_bbox_x_min", "vehicle_bbox_y_min", "vehicle_bbox_x_max", "vehicle_bbox_y_max"],
     "additionalProperties": False,
 }
 

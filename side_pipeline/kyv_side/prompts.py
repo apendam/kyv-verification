@@ -24,6 +24,11 @@ full_side_visible must be true ONLY if both the cabin and the axle/wheel area ar
 frame together. False if either end is cropped out of frame, obscured, or the photo only shows \
 one portion of the vehicle's side.
 
+Also locate the bounding box tightly enclosing the main vehicle itself -- not the road, sky, other \
+vehicles, or any background/environment around it -- as fractions of image width/height. Used to \
+crop the image down to just the vehicle before duplicate-image comparison, independent of whether \
+full_side_visible is true. If no vehicle is visible at all, use 0 for all four bounds.
+
 Respond only with the requested JSON."""
 
 AXLE_COUNT_SYSTEM = """You are counting the axles visible in this side photo of a commercial \

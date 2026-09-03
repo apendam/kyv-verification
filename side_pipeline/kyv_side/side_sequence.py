@@ -89,6 +89,10 @@ def run_side_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
     r = call("framing_check", prompts.FRAMING_SYSTEM, prompts.framing_user_text(), schemas.FRAMING_SCHEMA)
     if r is None:
         return finish("MANUAL_REVIEW", "framing check: technical failure")
+
+    vehicle_bbox = (r.data.get("vehicle_bbox_x_min", 0.0), r.data.get("vehicle_bbox_y_min", 0.0),
+                     r.data.get("vehicle_bbox_x_max", 0.0), r.data.get("vehicle_bbox_y_max", 0.0))
+
     if not r.data.get("full_side_visible", False):
         return finish("REJECT", "full side of vehicle not visible")
 
@@ -136,7 +140,7 @@ def run_side_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
     try:
         dup_result = duplicate.check_duplicate(
             conn, image_path=str(image_path), image_type=IMAGE_TYPE, claimed_vrn=claimed_vrn_norm,
-            exclude_upload_id=upload_id, plate_bbox=vrn_bbox,
+            exclude_upload_id=upload_id, plate_bbox=vrn_bbox, vehicle_bbox=vehicle_bbox,
         )
     except Exception as exc:  # noqa: BLE001 - a bad/corrupt image file, most likely
         db.log_check(conn, upload_id=upload_id, image_type=IMAGE_TYPE, check_name="duplicate_check",

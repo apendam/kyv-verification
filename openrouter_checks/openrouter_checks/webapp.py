@@ -576,6 +576,33 @@ def _locate_plate_bbox(client: OpenRouterClient, conn, image_path: str, vision_m
             r.data.get("bbox_x_max", 0.0), r.data.get("bbox_y_max", 0.0))
 
 
+def _locate_vehicle_bbox(client: OpenRouterClient, conn, image_path: str, vision_model: str,
+                          upload_id: str, image_type: str) -> tuple[float, float, float, float] | None:
+    """One extra vision call so the same vehicle-cropping the Check Image
+    path gets "for free" (piggybacked on its front image check) also applies
+    here, where there's no other reason to locate the vehicle. Logged like
+    every other model call for cost transparency. A technical failure just
+    skips cropping for this seed rather than failing it outright.
+    """
+    try:
+        r = client.chat_json(
+            model=vision_model, system_prompt=prompts.FRONT_IMAGE_SYSTEM,
+            user_text=prompts.front_image_user_text(), image_paths=[image_path],
+            json_schema=schemas.FRONT_IMAGE_SCHEMA, schema_name="vehicle_locate",
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.log_check(conn, upload_id=upload_id, image_type=image_type, check_name="vehicle_locate",
+                     model=vision_model, verdict="technical_failure", detail={"error": str(exc)},
+                     technical_failure=True)
+        return None
+
+    db.log_check(conn, upload_id=upload_id, image_type=image_type, check_name="vehicle_locate",
+                 model=r.model, verdict="ok", detail=r.data, prompt_tokens=r.prompt_tokens,
+                 completion_tokens=r.completion_tokens, cost_usd=r.cost_usd, latency_ms=r.latency_ms)
+    return (r.data.get("vehicle_bbox_x_min", 0.0), r.data.get("vehicle_bbox_y_min", 0.0),
+            r.data.get("vehicle_bbox_x_max", 0.0), r.data.get("vehicle_bbox_y_max", 0.0))
+
+
 def run_seed(image_file, image_type, upload_id, vrn, vision_model):
     stats = refresh_repo_stats()
     row_updates = refresh_row_list(image_type)
@@ -595,7 +622,8 @@ def run_seed(image_file, image_type, upload_id, vrn, vision_model):
     try:
         client = OpenRouterClient()
         plate_bbox = _locate_plate_bbox(client, conn, image_file, vision_model, upload_id, image_type)
-        phash = str(duplicate.compute_phash(image_file, plate_bbox))
+        vehicle_bbox = _locate_vehicle_bbox(client, conn, image_file, vision_model, upload_id, image_type)
+        phash = str(duplicate.compute_phash(image_file, plate_bbox, vehicle_bbox))
     except OpenRouterInsufficientCredits as exc:
         return f"### Stopped — out of OpenRouter credits\n\n{exc}", stats, *row_updates
     except Exception as exc:  # noqa: BLE001
@@ -608,7 +636,7 @@ def run_seed(image_file, image_type, upload_id, vrn, vision_model):
     # than failing the seed -- pHash alone still works for it.
     siglip_embedding = None
     try:
-        vector = duplicate.compute_siglip_embedding(image_file, plate_bbox)
+        vector = duplicate.compute_siglip_embedding(image_file, plate_bbox, vehicle_bbox)
         siglip_embedding = db.pack_embedding(vector)
     except Exception:  # noqa: BLE001
         pass

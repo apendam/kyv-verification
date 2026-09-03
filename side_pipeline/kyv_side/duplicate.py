@@ -30,40 +30,61 @@ from . import config, db, imaging
 from .siglip import get_siglip_model
 
 
-def compute_phash(image_path: str, plate_bbox: tuple[float, float, float, float] | None = None
+def _prepared_image_path(image_path: str, *,
+                          plate_bbox: tuple[float, float, float, float] | None,
+                          vehicle_bbox: tuple[float, float, float, float] | None) -> str:
+    """Masks the plate, then crops to the vehicle (both optional, in that
+    order — masking never changes image dimensions, so `vehicle_bbox`, a
+    fraction of the ORIGINAL image, still lands correctly after it). Returns
+    `image_path` unchanged if neither is given. Caller must unlink the
+    result if it differs from `image_path` — always a fresh temp file, never
+    the original.
+    """
+    path = image_path
+    if plate_bbox is not None:
+        path = imaging.mask_normalized_box(path, plate_bbox)
+    if vehicle_bbox is not None:
+        cropped = imaging.crop_normalized_box(path, vehicle_bbox)
+        if path != image_path and cropped != path:
+            os.unlink(path)
+        path = cropped
+    return path
+
+
+def compute_phash(image_path: str, plate_bbox: tuple[float, float, float, float] | None = None,
+                   vehicle_bbox: tuple[float, float, float, float] | None = None
                    ) -> imagehash.ImageHash:
     """Hashes `image_path`, blacking out `plate_bbox` first if given (see
     imaging.mask_normalized_box) so the comparison is based on the rest of
     the vehicle rather than the plate — reusing the same photo under a
     different claimed VRN by only swapping the plate can't dodge this check,
     and the hash isn't influenced by whatever text happens to be on the
-    plate. Reference images are expected to be hashed the same way for the
-    comparison to be meaningful.
+    plate — then cropping to `vehicle_bbox` if given (see
+    imaging.crop_normalized_box) so background/environment doesn't factor
+    into the comparison either. Reference images are expected to be hashed
+    the same way for the comparison to be meaningful.
     """
-    hash_path = image_path
-    if plate_bbox is not None:
-        hash_path = imaging.mask_normalized_box(image_path, plate_bbox)
+    hash_path = _prepared_image_path(image_path, plate_bbox=plate_bbox, vehicle_bbox=vehicle_bbox)
     try:
         return imagehash.phash(Image.open(hash_path))
     finally:
         if hash_path != image_path:
-            os.unlink(hash_path)  # a masked temp copy, never the original
+            os.unlink(hash_path)  # a masked/cropped temp copy, never the original
 
 
 def compute_siglip_embedding(image_path: str,
-                              plate_bbox: tuple[float, float, float, float] | None = None
+                              plate_bbox: tuple[float, float, float, float] | None = None,
+                              vehicle_bbox: tuple[float, float, float, float] | None = None
                               ) -> np.ndarray:
-    """Same plate-masking as compute_phash, just feeding the local SigLIP
-    model instead of the hash function -- the two signals compare the same
-    (masked) pixels."""
-    mask_path = image_path
-    if plate_bbox is not None:
-        mask_path = imaging.mask_normalized_box(image_path, plate_bbox)
+    """Same plate-masking and vehicle-cropping as compute_phash, just feeding
+    the local SigLIP model instead of the hash function -- the two signals
+    compare the same (masked, cropped) pixels."""
+    prepared_path = _prepared_image_path(image_path, plate_bbox=plate_bbox, vehicle_bbox=vehicle_bbox)
     try:
-        return get_siglip_model().embed_image(mask_path)
+        return get_siglip_model().embed_image(prepared_path)
     finally:
-        if mask_path != image_path:
-            os.unlink(mask_path)
+        if prepared_path != image_path:
+            os.unlink(prepared_path)
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -96,8 +117,9 @@ class DuplicateResult:
 
 def _phash_check(conn: sqlite3.Connection, *, image_path: str, image_type: str, claimed_vrn: str,
                   exclude_upload_id: str | None, hamming_max: int,
-                  plate_bbox: tuple[float, float, float, float] | None) -> DuplicateResult:
-    query_hash = compute_phash(image_path, plate_bbox)
+                  plate_bbox: tuple[float, float, float, float] | None,
+                  vehicle_bbox: tuple[float, float, float, float] | None) -> DuplicateResult:
+    query_hash = compute_phash(image_path, plate_bbox, vehicle_bbox)
     candidates = db.fetch_reference_phashes(conn, image_type, exclude_upload_id)
     if not candidates:
         return DuplicateResult(False, "none", None, None, None,
@@ -134,8 +156,9 @@ def _phash_check(conn: sqlite3.Connection, *, image_path: str, image_type: str, 
 
 def _siglip_check(conn: sqlite3.Connection, *, image_path: str, image_type: str, claimed_vrn: str,
                    exclude_upload_id: str | None, similarity_min: float,
-                   plate_bbox: tuple[float, float, float, float] | None) -> DuplicateResult:
-    query_vec = compute_siglip_embedding(image_path, plate_bbox)
+                   plate_bbox: tuple[float, float, float, float] | None,
+                   vehicle_bbox: tuple[float, float, float, float] | None) -> DuplicateResult:
+    query_vec = compute_siglip_embedding(image_path, plate_bbox, vehicle_bbox)
     candidates = db.fetch_reference_siglip_embeddings(conn, image_type, exclude_upload_id)
     if not candidates:
         return DuplicateResult(False, "none", None, None, None,
@@ -172,16 +195,23 @@ def check_duplicate(conn: sqlite3.Connection, *, image_path: str, image_type: st
                      hamming_max: int = config.DUPLICATE_HAMMING_MAX,
                      siglip_similarity_min: float = config.DUPLICATE_SIGLIP_SIMILARITY_MIN,
                      plate_bbox: tuple[float, float, float, float] | None = None,
+                     vehicle_bbox: tuple[float, float, float, float] | None = None,
                      ) -> DuplicateResult:
     """pHash first; if it already flags a duplicate (or there's no reference
     corpus at all to compare against), that's the final answer -- no need to
     load SigLIP. Only when pHash runs a real comparison and comes back clean
     does the heavier SigLIP pass run, to catch what pHash's near-identical-
     pixels test misses (a re-crop, a lighting or angle change).
+
+    `vehicle_bbox`, when given, crops both signals down to just the vehicle
+    (see imaging.crop_normalized_box) so background/environment can't drive
+    a false match or mask a real one — reference images must be hashed/
+    embedded with the same cropping for the comparison to be meaningful.
     """
     phash_result = _phash_check(
         conn, image_path=image_path, image_type=image_type, claimed_vrn=claimed_vrn,
         exclude_upload_id=exclude_upload_id, hamming_max=hamming_max, plate_bbox=plate_bbox,
+        vehicle_bbox=vehicle_bbox,
     )
     if phash_result.is_duplicate or phash_result.signal == "none":
         return phash_result
@@ -189,5 +219,5 @@ def check_duplicate(conn: sqlite3.Connection, *, image_path: str, image_type: st
     return _siglip_check(
         conn, image_path=image_path, image_type=image_type, claimed_vrn=claimed_vrn,
         exclude_upload_id=exclude_upload_id, similarity_min=siglip_similarity_min,
-        plate_bbox=plate_bbox,
+        plate_bbox=plate_bbox, vehicle_bbox=vehicle_bbox,
     )

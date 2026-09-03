@@ -76,6 +76,9 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
          cost_usd=r.cost_usd, latency_ms=r.latency_ms)
     steps.append({"check": "front_image_check", **r.data, "claimed_vehicle_type": claimed_vehicle_type})
 
+    vehicle_bbox = (r.data.get("vehicle_bbox_x_min", 0.0), r.data.get("vehicle_bbox_y_min", 0.0),
+                     r.data.get("vehicle_bbox_x_max", 0.0), r.data.get("vehicle_bbox_y_max", 0.0))
+
     detected_vehicle_type = r.data.get("detected_vehicle_type", "other")
     if detected_vehicle_type == "other":
         return finish("REJECT", "not a bus or truck")
@@ -172,6 +175,7 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
         dup_result = duplicate.check_duplicate(
             conn, image_path=str(image_path), image_type="front",
             claimed_vrn=claimed_vrn, exclude_upload_id=upload_id, plate_bbox=plate_bbox,
+            vehicle_bbox=vehicle_bbox,
         )
     except Exception as exc:  # noqa: BLE001 - a bad/corrupt image file, most likely
         _log(conn, upload_id, "duplicate_check", "local:duplicate_check", "technical_failure",
