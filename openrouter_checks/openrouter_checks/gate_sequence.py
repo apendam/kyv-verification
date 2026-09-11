@@ -1,8 +1,13 @@
 """Orchestrates one upload through the exact decision tree in the "KYV Gate
 Sequence" flowchart:
 
-  local AI-detector (no model call) -- a cheap, independent signal that gates
-    the vision call below; a hit sends straight to manual review
+  filename heuristic (no model call, no image processing) -- a hit against a
+    known AI-generator export name sends straight to manual review; a known
+    real-camera/screenshot/WhatsApp naming convention (or no match either
+    way) just proceeds -- see filename_check.py for why this is weak and
+    narrow-case only
+    -> local AI-detector (no model call) -- a cheap, independent signal that
+       gates the vision call below; a hit sends straight to manual review
     -> front image (vehicle type + tamper, one call) -- reject outright if the
        detected type isn't a bus/truck at all, or doesn't match what was
        claimed; the tamper judgment now also covers a visible AI-generator
@@ -25,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ai_detector, config, db, duplicate, matching, prompts, schemas
+from . import ai_detector, config, db, duplicate, filename_check, matching, prompts, schemas
 from .client import OpenRouterClient, OpenRouterError, OpenRouterInsufficientCredits
 
 
@@ -61,7 +66,25 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
                           claimed_vrn=claimed_vrn, claimed_make=claimed_make)
         return GateResult(upload_id, decision, reason, steps)
 
-    # -- 0. Local AI-detector (no model call) -- cheap signal gates the -------
+    # -- 0. Filename heuristic (no model call, no image processing) -----------
+    # Cheapest possible signal -- checked first, before even the local
+    # detector. `image_path`'s basename is expected to be the client-provided
+    # original filename; see filename_check.py's own docstring for why this
+    # is weak and MANUAL_REVIEW-only.
+    upload_filename = Path(image_path).name
+    if filename_check.matches_ai_generator_filename(upload_filename):
+        _log(conn, upload_id, "filename_check", "local:filename_check", "flagged",
+             {"filename": upload_filename})
+        steps.append({"check": "filename_check", "filename": upload_filename, "outcome": "flagged"})
+        return finish("MANUAL_REVIEW",
+                      f"filename matches a known AI-generator naming convention ({upload_filename!r})")
+
+    _log(conn, upload_id, "filename_check", "local:filename_check", "clean",
+         {"filename": upload_filename,
+          "matches_known_camera_pattern": filename_check.matches_known_camera_filename(upload_filename)})
+    steps.append({"check": "filename_check", "filename": upload_filename, "outcome": "clean"})
+
+    # -- 1. Local AI-detector (no model call) -- cheap signal gates the -------
     # costlier vision call, same order as the vehicle-type-before-tamper logic
     # below. MANUAL_REVIEW-only: see ai_detector.py for why this is never a
     # reject gate or trusted alone.
