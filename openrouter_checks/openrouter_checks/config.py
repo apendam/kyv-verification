@@ -26,6 +26,16 @@ DEFAULT_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "anthropic/clau
 SIGLIP_MODEL = os.environ.get("KYV_SIGLIP_MODEL", "google/siglip2-base-patch16-512")
 SIGLIP_DEVICE = os.environ.get("KYV_SIGLIP_DEVICE", "cuda")  # resolves to mps/cpu when unavailable
 
+# Local no-reference AI-generation classifier (see ai_detector.py) -- a second,
+# independent signal alongside the vision model's own is_altered_or_ai_generated
+# judgment. Empirically weak on its own (see that module's docstring); a
+# MANUAL_REVIEW-only signal, never a reject gate. The 0.9 threshold is a
+# starting point, not calibrated -- our one real-world test scored a genuine
+# false positive above 0.999, so don't expect thresholding alone to fix that.
+AI_DETECTOR_MODEL = os.environ.get("KYV_AI_DETECTOR_MODEL", "Organika/sdxl-detector")
+AI_DETECTOR_DEVICE = os.environ.get("KYV_AI_DETECTOR_DEVICE", "cuda")  # resolves to mps/cpu when unavailable
+AI_DETECTOR_ARTIFICIAL_THRESHOLD = float(os.environ.get("KYV_AI_DETECTOR_THRESHOLD", "0.9"))
+
 # --- storage ----------------------------------------------------------------
 DEFAULT_DB_PATH = Path(os.environ.get("KYV_DB_PATH", "kyv_checks.sqlite3"))
 

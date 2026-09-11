@@ -1,9 +1,14 @@
 """Orchestrates one upload through the exact decision tree in the "KYV Gate
 Sequence" flowchart:
 
-  front image (vehicle type + tamper, one call) -- reject outright if the
-    detected type isn't a bus/truck at all, or doesn't match what was claimed
-    -> VRN check (unreadable / match / mismatch-similar / mismatch-other)
+  local AI-detector (no model call) -- a cheap, independent signal that gates
+    the vision call below; a hit sends straight to manual review
+    -> front image (vehicle type + tamper, one call) -- reject outright if the
+       detected type isn't a bus/truck at all, or doesn't match what was
+       claimed; the tamper judgment now also covers a visible AI-generator
+       watermark and a windshield sticker/FASTag that looks composited in
+    -> VRN check (unreadable / match / mismatch-similar / mismatch-other),
+       plus a plate-physical-genuineness check on a match
     -> maker check, only after a VRN match (unreadable or match proceed;
        mismatch -> manual review; never a reject on its own)
     -> duplicate check, last, only on the path that would otherwise approve
@@ -20,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, db, duplicate, matching, prompts, schemas
+from . import ai_detector, config, db, duplicate, matching, prompts, schemas
 from .client import OpenRouterClient, OpenRouterError, OpenRouterInsufficientCredits
 
 
@@ -55,6 +60,29 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
         db.record_result(conn, upload_id=upload_id, decision=decision, reason=reason,
                           claimed_vrn=claimed_vrn, claimed_make=claimed_make)
         return GateResult(upload_id, decision, reason, steps)
+
+    # -- 0. Local AI-detector (no model call) -- cheap signal gates the -------
+    # costlier vision call, same order as the vehicle-type-before-tamper logic
+    # below. MANUAL_REVIEW-only: see ai_detector.py for why this is never a
+    # reject gate or trusted alone.
+    detector_start = time.perf_counter()
+    try:
+        artificial_score = ai_detector.get_ai_detector().score_artificial(str(image_path))
+    except Exception as exc:  # noqa: BLE001 - a bad/corrupt image file, or a model load failure
+        _log(conn, upload_id, "ai_detector_check", "local:ai_detector", "technical_failure",
+             {"error": str(exc)}, latency_ms=int((time.perf_counter() - detector_start) * 1000),
+             technical_failure=True)
+        return finish("MANUAL_REVIEW", "AI detector check: technical failure")
+    detector_latency_ms = int((time.perf_counter() - detector_start) * 1000)
+
+    flagged = artificial_score >= config.AI_DETECTOR_ARTIFICIAL_THRESHOLD
+    _log(conn, upload_id, "ai_detector_check", "local:ai_detector",
+         "flagged" if flagged else "clean", {"artificial_score": artificial_score},
+         latency_ms=detector_latency_ms)
+    steps.append({"check": "ai_detector_check", "artificial_score": artificial_score,
+                  "outcome": "flagged" if flagged else "clean"})
+    if flagged:
+        return finish("MANUAL_REVIEW", f"local AI-detector flagged image (score={artificial_score:.3f})")
 
     # -- 1. Front image check (vehicle type + tamper, one call) --------------
     try:
@@ -130,7 +158,12 @@ def run_gate_sequence(conn: sqlite3.Connection, client: OpenRouterClient, *,
         return finish("REJECT", "VRN mismatch")
     if vrn_verdict.outcome == "mismatch_similar":
         return finish("MANUAL_REVIEW", "similar-char mismatch")
-    # else: "match" -> fall through to maker check
+    # else: "match" -> fall through
+
+    if not r.data.get("plate_looks_physically_genuine", True):
+        return finish("MANUAL_REVIEW", "plate does not look physically genuine")
+
+    # -> maker check
 
     # -- 3. Maker check (only reached after a VRN match) ----------------------
     try:
