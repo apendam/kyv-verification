@@ -20,15 +20,25 @@ from __future__ import annotations
 import re
 
 # Default filenames used by popular AI image generators/editors, when
-# unedited by the user. Case-insensitive substring match. Only ChatGPT and
-# Gemini self-identify with a literal brand string by default; the others
-# listed here (ComfyUI, ChatGPT/DALL-E) are well-documented, fixed defaults --
-# Midjourney's own default ("<username>_<prompt>_<uuid>.png") deliberately
-# isn't included here since it carries no fixed brand keyword to match on.
+# unedited by the user. Matched against a normalized filename (lowercased,
+# every non-alphanumeric character stripped -- see _normalize) so upload-host
+# sanitization that swaps spaces/underscores for hyphens (confirmed in
+# practice: postimg.cc rewrote "ChatGPT Image ....png" to
+# "Chat-GPT-Image-....png" on upload, which a plain "chatgpt" substring check
+# missed) doesn't defeat the match. Only ChatGPT and Gemini self-identify with
+# a literal brand string by default; the others listed here (ComfyUI,
+# DALL-E) are well-documented, fixed defaults -- Midjourney's own default
+# ("<username>_<prompt>_<uuid>.png") deliberately isn't included here since it
+# carries no fixed brand keyword to match on.
 AI_GENERATOR_FILENAME_MARKERS = (
-    "chatgpt", "dall-e", "dalle", "gemini_generated_image", "geminigeneratedimage",
-    "comfyui", "firefly", "leonardo",
+    "chatgpt", "dalle", "geminigeneratedimage", "comfyui", "firefly", "leonardo",
 )
+
+
+def _normalize(s: str) -> str:
+    """Lowercase and strip every non-alphanumeric character, so separator
+    choice (space/underscore/hyphen/none) can't affect a marker match."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
 
 # Known real-camera / screenshot naming conventions, also unedited by the
 # user. A match here is NOT evidence of anything by itself -- it's the common
@@ -47,8 +57,8 @@ CAMERA_FILENAME_PATTERNS = (
 def matches_ai_generator_filename(filename: str) -> bool:
     """True if `filename` (just the name, not a full path) looks like an
     unedited default export from a known AI image generator/editor."""
-    lower = filename.lower()
-    return any(marker in lower for marker in AI_GENERATOR_FILENAME_MARKERS)
+    normalized = _normalize(filename)
+    return any(marker in normalized for marker in AI_GENERATOR_FILENAME_MARKERS)
 
 
 def matches_known_camera_filename(filename: str) -> bool:
