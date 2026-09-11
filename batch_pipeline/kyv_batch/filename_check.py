@@ -94,7 +94,8 @@ CAMERA_FILENAME_PATTERNS = (
     re.compile(r"^IMG_\d{8}_\d{6}\.jpe?g$", re.IGNORECASE),          # Android (stock/AOSP) photo
     re.compile(r"^PXL_\d{8}_\d{6,9}.*\.jpe?g$", re.IGNORECASE),      # Google Pixel photo
     re.compile(r"^Screenshot_\d{8}-\d{6}.*\.png$", re.IGNORECASE),   # Android screenshot (Samsung appends an app name)
-    re.compile(r"^IMG-\d{8}-WA\d+\.jpe?g$", re.IGNORECASE),          # WhatsApp-relayed image
+    re.compile(r"^IMG-\d{8}-WA\d+\.jpe?g$", re.IGNORECASE),          # WhatsApp mobile -- saved from a chat
+    re.compile(r"^WhatsApp Image \d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}(?: \(\d+\))?\.jpe?g$", re.IGNORECASE),  # WhatsApp Desktop/Web -- downloaded from a chat
 )
 
 
