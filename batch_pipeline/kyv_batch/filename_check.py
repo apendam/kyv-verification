@@ -40,6 +40,50 @@ def _normalize(s: str) -> str:
     choice (space/underscore/hyphen/none) can't affect a marker match."""
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
+
+def _edit_distance(a: str, b: str) -> int:
+    """Optimal string alignment distance (Levenshtein + adjacent-transposition
+    as one edit, e.g. "chatgtp" -> "chatgpt" is distance 1, not 2) -- catches
+    the common fat-finger typo/rename case, not just exact matches."""
+    la, lb = len(a), len(b)
+    d = [[0] * (lb + 1) for _ in range(la + 1)]
+    for i in range(la + 1):
+        d[i][0] = i
+    for j in range(lb + 1):
+        d[0][j] = j
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + cost)
+    return d[la][lb]
+
+
+def _fuzzy_tolerance(marker: str) -> int:
+    """Edit-distance budget for a marker, scaled to its length. Short/generic
+    markers (e.g. "dalle", 5 chars) get zero slack -- fuzzy matching those
+    would trade a handful of real catches for a lot of noise, since plenty of
+    unrelated words sit one edit away. Longer, more distinctive markers get
+    1-2 edits of slack to survive a typo'd rename."""
+    n = len(marker)
+    if n < 6:
+        return 0
+    if n < 10:
+        return 1
+    return 2
+
+
+def _fuzzy_contains(haystack: str, needle: str, max_dist: int) -> bool:
+    if max_dist == 0:
+        return needle in haystack
+    n = len(needle)
+    for length in range(max(1, n - max_dist), n + max_dist + 1):
+        for start in range(0, len(haystack) - length + 1):
+            if _edit_distance(haystack[start:start + length], needle) <= max_dist:
+                return True
+    return False
+
 # Known real-camera / screenshot naming conventions, also unedited by the
 # user. A match here is NOT evidence of anything by itself -- it's the common
 # case. Listed for documentation/audit-trail purposes: anything that doesn't
@@ -55,10 +99,15 @@ CAMERA_FILENAME_PATTERNS = (
 
 
 def matches_ai_generator_filename(filename: str) -> bool:
-    """True if `filename` (just the name, not a full path) looks like an
-    unedited default export from a known AI image generator/editor."""
+    """True if `filename` (just the name, not a full path) looks like a
+    default export from a known AI image generator/editor, allowing for a
+    typo'd or lightly-altered rename (see _fuzzy_tolerance) -- not just an
+    exact, unedited default."""
     normalized = _normalize(filename)
-    return any(marker in normalized for marker in AI_GENERATOR_FILENAME_MARKERS)
+    return any(
+        _fuzzy_contains(normalized, marker, _fuzzy_tolerance(marker))
+        for marker in AI_GENERATOR_FILENAME_MARKERS
+    )
 
 
 def matches_known_camera_filename(filename: str) -> bool:
